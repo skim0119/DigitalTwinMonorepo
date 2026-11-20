@@ -86,3 +86,10 @@ button.view-reset{right:.8rem;font-size:.8rem}
  aside{border-right:0;border-bottom:1px solid var(--line);max-height:14rem;overflow:auto}
  main,.top{padding:.85rem}
 }
+.sample-pick{position:absolute;inset:0;cursor:crosshair;touch-action:none}
+.sample-pick:focus-visible{outline-offset:-3px}
+.sample-box{position:absolute;border:1px solid #ffca73;background:#ffca7326;pointer-events:none}
+.view-reset,.axis-key{z-index:1}
+.axis-key{pointer-events:none}
+.sample-tools span{color:var(--quiet)}
+.sample-tools button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { active, average, defaultReview, exportCsv, reviewed } from './review';
+import { active, average, defaultReview, exportCsv, reviewed, sampleDeletions } from './review';
 import type { Action, Control, Point, Pose, Review, Run, Table } from './review';
 import { Trajectory } from './trajectory';
 import type { Trace } from './trajectory';
@@ -57,6 +57,8 @@ function App() {
   const [end, setEnd] = useState<number>();
   const [action, setAction] = useState<Action>('flag');
   const [rawView, setRawView] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [samples, setSamples] = useState(new Set<string>());
 
   const report = (reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason));
   const refresh = () => api<Run[]>('/runs').then(setRuns);
@@ -165,9 +167,12 @@ function App() {
     candidate[3] === body && (!closest || Math.abs(candidate[0] - time) < Math.abs(closest[0] - time)) ? candidate : closest,
   undefined) : undefined;
   const canReview = !!current && !active(current);
+  const canPick = canReview && selected.includes(focus) && !rawView && focusPoses.length > 0;
+  const lastDeletion = [...review.intervals].reverse().find(mark => mark.group)?.group;
   const marks = review.intervals.filter(mark => !body || mark.body === body);
 
   function choose(run: Run) {
+    setPicking(false); setSamples(new Set());
     setFocus(run.id); setCursor(0); setFollow(true); setStart(undefined); setEnd(undefined);
     setSelected(ids => ids.includes(run.id) ? ids : [...ids, run.id]);
   }
@@ -209,8 +214,19 @@ function App() {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
       });
       setReviews(current => ({ ...current, [focus]: saved }));
+      return true;
     } catch (error) { report(error); }
     finally { setPending(false); }
+  }
+
+  async function deleteSamples() {
+    if (!canPick || pending || !samples.size) return;
+    const intervals = sampleDeletions(focusPoses, samples, crypto.randomUUID());
+    if (await saveReview({ ...review, intervals: [...review.intervals, ...intervals] })) setSamples(new Set());
+  }
+
+  function undoDeletion(group: string) {
+    if (!pending) void saveReview({ ...review, intervals: review.intervals.filter(mark => mark.group !== group) });
   }
 
   return <>
@@ -260,18 +276,40 @@ function App() {
           <button className="primary" disabled={pending || !online || !raw || (!!table && (!!busy || (simulated === false && !confirmed)))}>
             {table ? 'Start trials' : 'Validate CSV'}</button>
         </form>}
-        <section className="workbench">
+        <section className="workbench" onKeyDown={event => {
+          if (!picking || !canPick || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+          if (event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault();
+            void deleteSamples();
+          } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && lastDeletion) {
+            event.preventDefault();
+            undoDeletion(lastDeletion);
+          }
+        }}>
           <div className="workhead"><div><h2>{current ? `${current.label} · Trial ${current.trial}` : 'Pose trajectory'}</h2>
             <p>{current?.error ?? (current ? `${current.status} · ${current.table.duration} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
             {busy && <button className="stop" onClick={() => { void api(`/runs/${busy.id}/stop`, { method: 'POST' }).then(refresh).catch(report); }}>Stop batch</button>}
           </div>
           <div className="tools">
-            <label>Rigid body<select value={body} onChange={e => setBody(e.target.value)}>
+            <label>Rigid body<select value={body} onChange={e => { setSamples(new Set()); setBody(e.target.value); }}>
               <option value="">All bodies</option>{bodies.map(name => <option key={name}>{name}</option>)}</select></label>
             <label className="check"><input type="checkbox" checked={showMean} onChange={e => setShowMean(e.target.checked)} /> Mean of included repeats</label>
-            <label className="check"><input type="checkbox" checked={rawView} onChange={e => setRawView(e.target.checked)} /> Show raw poses</label>
+            <label className="check"><input type="checkbox" checked={rawView} onChange={e => { setPicking(false); setSamples(new Set()); setRawView(e.target.checked); }} /> Show raw poses</label>
           </div>
-          <Trajectory traces={traces} cursor={time} scope={selected.join(",") + ":" + body} />
+          {canReview && <div className="tools sample-tools">
+            <button aria-pressed={picking && canPick} disabled={!canPick} onClick={() => {
+              setPicking(!picking); setSamples(new Set());
+            }}>{picking && canPick ? 'Done selecting' : 'Select samples'}</button>
+            {picking && canPick && <>
+              <span aria-live="polite">{samples.size ? `${samples.size} selected` : 'Drag a box over the focused trial'}</span>
+              <button disabled={!samples.size || pending} onClick={() => void deleteSamples()}>Delete selected</button>
+              <button disabled={!samples.size} onClick={() => setSamples(new Set())}>Clear selection</button>
+            </>}
+            {lastDeletion && <button disabled={pending} onClick={() => undoDeletion(lastDeletion)}>Undo last deletion</button>}
+          </div>}
+          <Trajectory traces={traces} cursor={time} scope={selected.join(",") + ":" + body}
+            pick={picking && canPick ? focus : ''} selection={samples}
+            onPick={keys => setSamples(previous => new Set([...previous, ...keys]))} />
           <div className="keys">{traceData.map(trace => <span key={trace.key}><i style={{ background: trace.color }} />
             Trial {runs.find(run => trace.key.startsWith(run.id + ':'))?.trial} · {trace.key.slice(33)}</span>)}
             {mean.length > 0 && <span><i style={{ background: '#fff1cf' }} />Mean</span>}</div>
@@ -281,7 +319,7 @@ function App() {
             <input id="time" type="range" aria-label="Trial time" min={0} max={duration} step={0.001} value={Math.min(time, duration)}
               onChange={e => { setCursor(Number(e.target.value)); setFollow(false); }} />
             {marks.length > 0 && <div className="mark-track" aria-label="Annotated intervals">{marks.map((mark, index) =>
-              <span key={index} title={mark.action} className={mark.action} style={{ left: 100 * mark.start / duration + '%', width: 100 * (mark.end - mark.start) / duration + '%' }} />)}</div>}
+              <span key={index} title={mark.action} className={mark.action} style={{ left: 100 * mark.start / duration + '%', width: `max(2px, ${100 * (mark.end - mark.start) / duration}%)` }} />)}</div>}
             {cursorPose && Math.abs(cursorPose[0] - time) < .1 && <p className="stat">
               Raw {cursorPose[2]} position · {cursorPose.slice(4, 7).map(value => Number(value).toFixed(4)).join(', ')} m
             </p>}
@@ -304,7 +342,13 @@ function App() {
                 onClick={() => void saveReview({ ...review, intervals: [...review.intervals,
                   ...names.map(name => ({ body: name, start: start!, end: end!, action }))] })}>Apply to {body || 'all bodies'}</button>
             </div>
-            {review.intervals.map((mark, i) => <div className="annotation" key={i}>
+            {review.intervals.map((mark, i) => mark.group
+              ? review.intervals.findIndex(candidate => candidate.group === mark.group) === i &&
+                <div className="annotation" key={mark.group}>
+                  <span>Sample deletion · {review.intervals.filter(candidate => candidate.group === mark.group).length} selected segments</span>
+                  <button disabled={pending} onClick={() => undoDeletion(mark.group!)}>Undo deletion</button>
+                </div>
+              : <div className="annotation" key={i}>
               <span>{mark.body} · {seconds(mark.start)}–{seconds(mark.end)} s · {mark.action}</span>
               <button disabled={pending} onClick={() => void saveReview({ ...review, intervals: review.intervals.filter((_, index) => index !== i) })}>Undo</button></div>)}
           </section>}

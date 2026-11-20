@@ -30,3 +30,14 @@ test('repeat mean tracks spread, sample count, and gaps', () => {
   assert.ok(!mean.some(p => p.pose[0] === .2));
   assert.equal(mean.at(-1)?.count, 1);
 });
+
+test('sample deletion groups consecutive selections and preserves unselected frames', async () => {
+  const { sampleDeletions, sampleKey } = await import('./review.ts');
+  const raw = [0, .02, .04, .06, .08].map(t => pose(t, t));
+  const marks = sampleDeletions(raw, new Set([0, 1, 3].map(i => sampleKey(raw[i]))), 'delete-one');
+  assert.deepEqual(marks.map(mark => [mark.start, mark.end, mark.group]),
+    [[0, .02, 'delete-one'], [.06, .06, 'delete-one']]);
+  assert.deepEqual(reviewed(raw, marks, raw[0][3]).map(p => p.pose[0]), [.04, .08]);
+  assert.equal(reviewed(raw, marks, raw[0][3])[1].gap, true);
+  assert.equal(reviewed(raw, marks.filter(mark => mark.group !== 'delete-one'), raw[0][3]).length, 5);
+});

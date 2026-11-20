@@ -25,7 +25,10 @@ The default SSH tunnel binds locally on port 15052.
 3. Select a rigid body and mark the start and end of a review interval. Flag
    it, exclude it, or interpolate if the surrounding gap is at most 250 ms.
    The raw pose download always contains the original recording. Undo removes
-   an annotation.
+   an annotation. For individual samples, choose **Select samples** and drag a
+   box in the 3D view. Drag again to add to the selection. Press **Delete**
+   or use **Delete selected**, then choose **Undo last deletion** to restore
+   the entire selection. These edits apply to the focused trial.
 4. Select completed repeats with the same actuation table to show their mean and spread.
    Use **Include this trial in the mean** to exclude a trial while retaining
    its visible trajectory. The mean uses elapsed time, a 50 Hz grid, and a

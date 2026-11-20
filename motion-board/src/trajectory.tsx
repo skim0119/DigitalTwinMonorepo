@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { sampleKey } from './review';
 import type { Point } from './review';
+import type { PointerEvent } from 'react';
 
 export type Trace = { key: string; color: string; points: Point[]; mean?: boolean };
 const xyz = (p: Point) => new THREE.Vector3(p.pose[4], p.pose[5], p.pose[6]);
 
-export function Trajectory({ traces, cursor, scope }: { traces: Trace[]; cursor: number; scope: string }) {
+type Box = { x: number; y: number; left: number; top: number; width: number; height: number };
+
+export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
+  traces: Trace[]; cursor: number; scope: string; pick: string;
+  selection: Set<string>; onPick: (keys: string[]) => void;
+}) {
   const mount = useRef<HTMLDivElement>(null);
   const view = useRef<{ scene: THREE.Scene; camera: THREE.PerspectiveCamera; controls: OrbitControls; data: THREE.Group; grid: THREE.GridHelper } | null>(null);
   const [error, setError] = useState(false);
+  const [box, setBox] = useState<Box>();
   const markers = useRef<{ trace: Trace; axis: THREE.AxesHelper }[]>([]);
   const fit = useRef({ scope: "", extent: 0, moved: false });
   useEffect(() => {
@@ -100,8 +108,12 @@ export function Trajectory({ traces, cursor, scope }: { traces: Trace[]; cursor:
       state.controls.update();
       fit.current = { scope, extent, moved: false };
     }
+    const chosen = traces.filter(trace => pick && trace.key.startsWith(pick + ':')).flatMap(trace =>
+      trace.points.filter(point => !point.interpolated && selection.has(sampleKey(point.pose))).map(xyz));
+    if (chosen.length) state.data.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(chosen),
+      new THREE.PointsMaterial({ color: '#ffca73', size: 7, sizeAttenuation: false, depthTest: false })));
     if (bounds.isEmpty()) fit.current = { scope: "", extent: 0, moved: false };
-  }, [traces, scope]);
+  }, [traces, scope, pick, selection]);
 
   useEffect(() => {
     for (const { trace, axis } of markers.current) {
@@ -133,11 +145,45 @@ export function Trajectory({ traces, cursor, scope }: { traces: Trace[]; cursor:
     fit.current.moved = true;
   }
 
+  function drag(event: PointerEvent<HTMLDivElement>, done: boolean) {
+    if (!box || !view.current) return;
+    const area = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - area.left, y = event.clientY - area.top;
+    const rect = { ...box, left: Math.min(x, box.x), top: Math.min(y, box.y),
+      width: Math.abs(x - box.x), height: Math.abs(y - box.y) };
+    if (!done) { setBox(rect); return; }
+    const padding = rect.width < 4 && rect.height < 4 ? 5 : 0;
+    const camera = view.current.camera;
+    camera.updateMatrixWorld();
+    const keys = traces.filter(trace => trace.key.startsWith(pick + ':')).flatMap(trace =>
+      trace.points.filter(point => {
+        if (point.interpolated) return false;
+        const p = xyz(point).project(camera);
+        const px = (1 + p.x) * area.width / 2, py = (1 - p.y) * area.height / 2;
+        return Math.abs(p.z) <= 1 && px >= rect.left - padding && px <= rect.left + rect.width + padding
+          && py >= rect.top - padding && py <= rect.top + rect.height + padding;
+      }).map(point => sampleKey(point.pose)));
+    onPick(keys);
+    setBox(undefined);
+  }
   return <div className="trajectory">
     <div ref={mount} className="viewport" aria-label="Rotatable 3D pose trajectories" />
     {error ? <p className="viewport-note">3D rendering is unavailable. Timeline and CSV downloads still work.</p>
       : !traces.some(t => t.points.length) && <p className="viewport-note">Select a recorded trial to inspect its trajectory.</p>}
     {!error && <button className="view-reset" onClick={reset}>Fit view</button>}
+    {pick && !error && <div className="sample-pick" tabIndex={0} aria-label="Drag to select samples from the focused trial"
+      onPointerDown={event => {
+        if (event.button !== 0) return;
+        event.currentTarget.focus();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left, y = event.clientY - rect.top;
+        setBox({ x, y, left: x, top: y, width: 0, height: 0 });
+      }}
+      onPointerMove={event => drag(event, false)} onPointerUp={event => drag(event, true)}
+      onPointerCancel={() => setBox(undefined)} onLostPointerCapture={() => setBox(undefined)}>
+      {box && <div className="sample-box" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />}
+    </div>}
     <span className="axis-key"><b>X</b><b>Y</b><b>Z</b> <span>meters</span></span>
   </div>;
 }

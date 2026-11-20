@@ -1,7 +1,7 @@
 export type Pose = [number, string, string, string, number, number, number, number, number, number, number];
 export type Control = [number, string, number, string, number, number | null, number | null];
 export type Action = 'flag' | 'exclude' | 'interpolate';
-export type Interval = { body: string; start: number; end: number; action: Action };
+export type Interval = { body: string; start: number; end: number; action: Action; group?: string };
 export type Review = { include: boolean; intervals: Interval[] };
 export type Point = { pose: Pose; interpolated?: boolean; gap?: boolean; spread?: number; count?: number };
 export type Table = { mode: string; unit: string; duration: number; times: number[]; values: number[][]; interpolation: string };
@@ -95,4 +95,29 @@ export function exportCsv(points: Point[], kind: 'reviewed' | 'mean') {
     (kind === 'mean' ? 'spread_m,contributors' : 'interpolated');
   return [header, ...points.map(p => [...p.pose, !!p.gap, ...(kind === 'mean' ?
     [p.spread, p.count] : [!!p.interpolated])].map(escape).join(','))].join('\n') + '\n';
+}
+
+export const sampleKey = (pose: Pose) => JSON.stringify([pose[3], pose[0]]);
+
+export function sampleDeletions(poses: Pose[], selection: Set<string>, group: string): Interval[] {
+  const bodies = new Map<string, Pose[]>();
+  for (const pose of poses) {
+    if (!bodies.has(pose[3])) bodies.set(pose[3], []);
+    bodies.get(pose[3])!.push(pose);
+  }
+  const intervals: Interval[] = [];
+  for (const [body, rows] of bodies) {
+    let interval: Interval | undefined;
+    for (const pose of rows.sort((a, b) => a[0] - b[0])) {
+      if (!selection.has(sampleKey(pose))) {
+        interval = undefined;
+      } else if (interval) {
+        interval.end = pose[0];
+      } else {
+        interval = { body, start: pose[0], end: pose[0], action: 'exclude', group };
+        intervals.push(interval);
+      }
+    }
+  }
+  return intervals;
 }

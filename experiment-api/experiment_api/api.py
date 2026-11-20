@@ -19,6 +19,7 @@ class Interval(BaseModel):
     start: float
     end: float
     action: str = Field(pattern="^(flag|exclude|interpolate)$")
+    group: str | None = Field(default=None, max_length=64)
 
 
 class Review(BaseModel):
@@ -111,11 +112,12 @@ def create_app(experiments):
             raise HTTPException(409, "Wait until recording finishes before reviewing it.")
         for interval in review.intervals:
             if not all(map(math.isfinite, [interval.start, interval.end])) or not (
-                    0 <= interval.start < interval.end <= run["table"]["duration"]):
+                    0 <= interval.start <= interval.end <= run["table"]["duration"]
+                    and (interval.start < interval.end or interval.action == "exclude")):
                 raise HTTPException(422, "Review intervals must be inside the trial timeline.")
         with experiments.lock:
-            write_json(experiments.root / run_id / "review.json", review.model_dump())
-        return review
+            write_json(experiments.root / run_id / "review.json", review.model_dump(exclude_none=True))
+        return review.model_dump(exclude_none=True)
 
     @app.get("/runs/{run_id}/samples")
     def samples(run_id: str, kind: str = Query(pattern="^(poses|controls)$")):
