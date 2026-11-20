@@ -12,6 +12,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <tuple>
@@ -100,6 +101,7 @@ struct Channel {
     std::thread thread;
     Reading reading;
     double target = 0, force = 0, speed = 0;
+    std::array<double, 3> gains{};
     bool force_mode = true;
     bool target_changed = false;
     long steps = 0, tightening_steps = 0;
@@ -226,6 +228,7 @@ class Controller {
                             const double candidate = integral + error * dt;
                             const double derivative = dt > 0 ? (error - previous_error) / dt : 0;
                             previous_error = error;
+                            const auto [kp, ki, kd] = channel.gains;
                             const double proposed = kp * error + ki * candidate + kd * derivative;
                             if (!std::isfinite(proposed)) {
                                 fail("Non-finite PID output");
@@ -303,7 +306,9 @@ public:
             selected < -1 || selected >= 6 || tightening_limit < 0)
             throw std::invalid_argument("Invalid controller configuration");
         uint32_t used = 0;
-        for (auto [step, dir, kp, ki, kd, low, high] : motors) {
+        for (size_t i = 0; i < motors.size(); ++i) {
+            const auto [step, dir, kp, ki, kd, low, high] = motors[i];
+            channels[i].gains = {kp, ki, kd};
             for (int pin : {step, dir}) {
                 if (pin < 0 || pin > 27 || (used & (1u << pin)))
                     throw std::invalid_argument("Invalid or duplicated motor pin");
@@ -365,7 +370,14 @@ public:
         return true;
     }
 
-    void command(const std::array<double, 6>& targets, bool force_mode, double ttl) {
+    void command(const std::array<double, 6>& targets, bool force_mode, double ttl,
+                 const std::optional<std::array<double, 3>>& gains) {
+        if (gains) {
+            if (selected < 0 || !force_mode)
+                throw std::invalid_argument("Live gains require one motor in force mode");
+            for (double gain : *gains)
+                if (!std::isfinite(gain) || gain < 0) throw std::invalid_argument("Invalid PID gain");
+        }
         if (!(ttl > 0 && ttl <= 0.25)) throw std::invalid_argument("Invalid command lifetime");
         for (size_t i = 0; i < targets.size(); ++i) {
             if (!enabled(i)) continue;
@@ -390,11 +402,14 @@ public:
         }
         expires = now + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(ttl));
         for (size_t i = 0; i < channels.size(); ++i) {
-            channels[i].target_changed |= channels[i].force_mode != force_mode ||
-                (force_mode && channels[i].target != targets[i]);
-            channels[i].target = targets[i];
-            channels[i].force_mode = force_mode;
-            channels[i].wake.notify_one();
+            if (!enabled(i)) continue;
+            auto& channel = channels[i];
+            channel.target_changed |= channel.force_mode != force_mode ||
+                (force_mode && channel.target != targets[i]) || (gains && channel.gains != *gains);
+            if (gains) channel.gains = *gains;
+            channel.target = targets[i];
+            channel.force_mode = force_mode;
+            channel.wake.notify_one();
         }
     }
 
@@ -420,7 +435,8 @@ PYBIND11_MODULE(_native, module) {
              py::arg("deadband_g"), py::arg("filter_alpha"), py::arg("simulate") = false,
              py::arg("motor") = -1, py::arg("max_tightening_steps") = 0)
         .def("ready", &Controller::ready, py::call_guard<py::gil_scoped_release>())
-        .def("command", &Controller::command, py::call_guard<py::gil_scoped_release>())
+        .def("command", &Controller::command, py::arg("targets"), py::arg("force_mode"),
+             py::arg("ttl"), py::arg("gains") = py::none(), py::call_guard<py::gil_scoped_release>())
         .def("tightening_steps", &Controller::tightening_steps, py::call_guard<py::gil_scoped_release>())
         .def("status", &Controller::status, py::call_guard<py::gil_scoped_release>())
         .def("stop", &Controller::stop, py::call_guard<py::gil_scoped_release>());

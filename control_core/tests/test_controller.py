@@ -96,6 +96,24 @@ class NativeControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Tightening STEP limit"):
             self.controller.command([0.2] * 6, True, 0.2)
 
+    def test_live_gain_edits_take_effect_within_one_session(self):
+        self.controller.stop()
+        self.controller = open_controller(
+            Path(__file__).resolve().parents[2] / "pins.json",
+            [(-100, 100)] * 6, port=self.socket.getsockname()[1],
+            max_force=1, max_rate=150, simulate=True, motor=2,
+        )
+        self.addCleanup(self.controller.stop)
+        self.wait_for(self.controller.ready)
+        self.controller.command([0.2] * 6, True, 0.2, gains=(0, 0, 0))
+        time.sleep(0.04)
+        self.assertEqual(self.controller.tightening_steps(2), 0)
+        self.controller.command([0.2] * 6, True, 0.2, gains=(550, 0, 0))
+        self.wait_for(lambda: self.controller.tightening_steps(2) >= 1)
+        self.controller.command([0.2] * 6, True, 0.2, gains=(0, 0, 0))
+        self.wait_for(lambda: self.controller.status()[2][2] == 0)
+        self.assertEqual(self.controller.status()[1], (0, 0, 0))
+
     def test_over_tension_uses_unfiltered_conversion(self):
         self.controller.command([0.2] * 6, True, 0.2)
         self.force = 1.1

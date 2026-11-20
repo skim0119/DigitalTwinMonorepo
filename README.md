@@ -43,12 +43,37 @@ and the shared force deadband in grams. The PID controller and tuner use
 these gains by default. The tuner's `--kp`, `--ki`, `--kd`, and `--deadband-g`
 options override them for one trial.
 
-With the Pi's HX711 streamer running, use
-`python3 debug/PID_tune_motor.py --help` to see the trial options.
+With the Pi's HX711 streamer running, install the current native controller
+in the active Python environment:
 
-PID Multi and the tuner write one folder per run under root `output/`. Each
-folder has a UTC timestamp, per-motor CSV logs, a force plot, and `run.json`
-with the effective PID settings and trial limits.
+```sh
+python3 -m pip install ./control_core
+```
+
+**One-shot tuning trial.** Run a timed trial with the configured gains, or
+supply overrides such as `--kp`. Set the target and verified limits for your
+motor before running:
+
+```sh
+python3 debug/PID_tune_motor.py --motor 0 --target-kg "$TARGET_KG" --seconds 3 \
+  --max-tension-kg "$MAX_TENSION_KG" --max-tightening-steps "$MAX_STEPS"
+```
+
+PID Multi and the one-shot tuner save timestamped CSVs, a force plot, and
+`run.json` with the effective settings and limits under root `output/`.
+The tuner also prints metrics and a copy-ready `"pid"` entry for that motor.
+
+**Live hand tuning.** Run from a desktop session on the Pi, or use X
+forwarding with a graphical Matplotlib backend:
+
+```sh
+python3 debug/PID_live_tune.py --motor 0 --target-kg "$TARGET_KG" \
+  --max-tension-kg "$MAX_TENSION_KG" --max-tightening-steps "$MAX_STEPS"
+```
+
+The plot shows the last 15 seconds of measured load and target. Press
+**Start**, then edit the target or gains and click **Apply settings**.
+Press **Stop** to end motion. Use `--help` on either script for all options.
 
 Try a simulated 25-pulse jog before using hardware:
 

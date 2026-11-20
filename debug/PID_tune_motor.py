@@ -1,6 +1,7 @@
 """Tune one motor's force PID using the HX711 streamer."""
 
 import argparse
+import json
 import math
 from pathlib import Path
 from statistics import fmean
@@ -69,9 +70,8 @@ def main():
     if args.max_tightening_steps is not None and args.max_tightening_steps <= 0:
         parser.error("--max-tightening-steps must be greater than zero")
 
-    from PID_multi import main as run_pid
-
     gains = {gain: value for gain in ("kp", "ki", "kd") if (value := getattr(args, gain)) is not None}
+    from PID_multi import main as run_pid
 
     channels = run_pid(
         args.motor,
@@ -83,7 +83,12 @@ def main():
         duration_s=args.seconds,
         config=args.config,
     )
-    report_performance(channels[0])
+    channel = channels[0]
+    report_performance(channel)
+    if channel.log_times:
+        gains = {"kp": channel.kp, "ki": channel.ki, "kd": channel.kd}
+        print(f"\nIf you accept this trial, replace the PID entry for motor {args.motor} in pins.json:")
+        print('"pid": ' + json.dumps(gains, allow_nan=False))
 
 
 if __name__ == "__main__":
