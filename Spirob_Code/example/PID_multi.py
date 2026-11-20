@@ -13,22 +13,44 @@ if __name__ == "__main__":
 
 
 import csv
+import json
 import math
 import os
 import socket
 import threading
 import sys
 import time
+from pathlib import Path
 import RPi.GPIO as GPIO
 import matplotlib
 matplotlib.use("Agg")  # headless -- no display needed/available on the Pi
 import matplotlib.pyplot as plt
-sys.path.append('/home/mgazzola/spirob_py_code/Spirob_Code/core_nodes/motor')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core_nodes/motor"))
 from motors import Motors
 
 # ----------------------------------------------------------------------
 # Motor / pin setup (shared across all motors)
 # ----------------------------------------------------------------------
+def nonnegative_setting(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        raise ValueError("PID gains and deadband in pins.json must be finite nonnegative numbers")
+    return value
+
+
+with (Path(__file__).resolve().parents[2] / "pins.json").open() as config_file:
+    settings = json.load(config_file)
+motor_config = settings["motors"]
+if [motor["motor"] for motor in motor_config] != list(range(6)):
+    raise ValueError("pins.json must list motors 0 through 5 in order")
+
+FORCE_DEADBAND_G = nonnegative_setting(settings["pid_deadband_g"])
+CHANNEL_CONFIGS = tuple(
+    dict(name=f"motor{index}", motor_index=index, setpoint_schedule=[0.1],
+         setpoint_interval_s=300, **{
+             gain: nonnegative_setting(motor["pid"][gain]) for gain in ("kp", "ki", "kd")
+         })
+    for index, motor in enumerate(motor_config)
+)
 PUL = [18, 10, 4, 23, 22, 26]
 DIR = [14, 9, 27, 1, 25, 0]
 MOTOR_ORIENTATION = [True, True, True, True, True, True]
@@ -48,7 +70,6 @@ motors = Motors(
 MAX_STEPS_PER_SEC = motors.max_rpm / 60 * motors.steps_per_rev
 
 MIN_ACTIVE_STEPS_PER_SEC = 0.3
-FORCE_DEADBAND_G = 3.0
 
 # shortcut: driver timing is unverified, check the installed driver's DIR spec before motor testing.
 DIR_GUARD_S = 10e-6
@@ -244,68 +265,6 @@ class MotorChannel:
             self._pulse_thread.join()
         motors.stop_motor([self.motor_index])
 
-
-# ----------------------------------------------------------------------
-# Configure each motor's channel -- gains and setpoint
-# schedule are all per-motor. EDIT THESE FOR YOUR TWO LOAD CELLS/MOTORS.
-# ----------------------------------------------------------------------
-CHANNEL_CONFIGS = (
-    dict(
-        name="motor0",
-        motor_index=0,
-        kp=550.0, ki=10.0, kd=5.0,
-        setpoint_schedule=[0.1],
-        #setpoint_schedule=[0.2, 2.5],
-        #setpoint_schedule=[1,2.5],
-        setpoint_interval_s=300,
-    ),
-
-    dict(
-        name="motor1",
-        motor_index=1,
-        kp=550.0, ki=10.0, kd=5.0,
-        setpoint_schedule=[0.1],
-        #setpoint_schedule=[0.2, 2.5],
-        #setpoint_schedule=[0.1,1.5,3.0],
-        setpoint_interval_s=300,
-    ),
-
-    dict(
-        name="motor2",
-        motor_index=2,
-        kp=550.0, ki=10.0, kd=5.0,
-        #setpoint_schedule=[0.2,2.5],
-        setpoint_schedule=[0.1],
-        setpoint_interval_s=300.0,
-    ),
-
-    dict(
-        name="motor3",
-        motor_index=3,
-        kp=550.0, ki=10.0, kd=5.0,
-        setpoint_schedule=[0.1],
-        setpoint_interval_s=300.0,
-    ),
-
-    dict(
-        name="motor4",
-        motor_index=4,
-        kp=550.0, ki=10.0, kd=5.0,
-        #setpoint_schedule=[2.5,0.2,2.5,0.2,2.5,0.2],
-        setpoint_schedule=[0.1],
-        setpoint_interval_s=300.0,
-    ),
-
-    dict(
-        name="motor5",
-        motor_index=5,
-        kp=550.0, ki=10.0, kd=5.0,
-        #setpoint_schedule=[2.5,0.2,2.5,0.2,2.5,0.2],
-        #setpoint_schedule=[0.1,0.5,0.9,1.3,1.5,1.8,2.1,2.5,2.1,1.8,1.5,1.3,0.9,0.5,0.1],
-        setpoint_schedule = [0.1],
-        setpoint_interval_s=300,
-    ),
-)
 
 LOG_CSV_TEMPLATE = "pid_force_log_{name}.csv"
 COMBINED_PLOT_PNG = "pid_force_plot_all_motors.png"

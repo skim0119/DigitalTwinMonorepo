@@ -2,6 +2,8 @@
 
 import argparse
 import math
+import sys
+from pathlib import Path
 from statistics import fmean
 
 
@@ -46,9 +48,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--motor", type=int, choices=range(6), required=True)
     parser.add_argument("--target-kg", type=nonnegative, required=True)
-    parser.add_argument("--kp", type=nonnegative, help="Defaults to the selected motor’s gain in PID_multi.py.")
-    parser.add_argument("--ki", type=nonnegative, default=0.0)
-    parser.add_argument("--kd", type=nonnegative, default=0.0)
+    for gain in ("kp", "ki", "kd"):
+        parser.add_argument(f"--{gain}", type=nonnegative,
+                            help="Override the selected motor's gain in pins.json.")
     parser.add_argument("--seconds", type=nonnegative, default=3.0,
                         help="Trial duration in seconds (default: %(default)g).")
     parser.add_argument("--deadband-g", type=nonnegative,
@@ -66,14 +68,15 @@ def main():
     if args.max_tightening_steps is not None and args.max_tightening_steps <= 0:
         parser.error("--max-tightening-steps must be greater than zero")
 
-    from PID_multi import CHANNEL_CONFIGS, FORCE_DEADBAND_G, main as run_pid
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Spirob_Code/example"))
+    from PID_multi import FORCE_DEADBAND_G, main as run_pid
 
-    kp = CHANNEL_CONFIGS[args.motor]["kp"] if args.kp is None else args.kp
+    gains = {gain: value for gain in ("kp", "ki", "kd") if (value := getattr(args, gain)) is not None}
 
     channels = run_pid(
         args.motor,
         tuning=dict(
-            kp=kp, ki=args.ki, kd=args.kd, setpoint_schedule=[args.target_kg],
+            **gains, setpoint_schedule=[args.target_kg],
             deadband_g=FORCE_DEADBAND_G if args.deadband_g is None else args.deadband_g,
             max_tension_kg=args.max_tension_kg, max_tightening_steps=args.max_tightening_steps,
         ),
