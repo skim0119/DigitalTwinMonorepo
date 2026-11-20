@@ -1,6 +1,7 @@
 """Persist each trial on the Pi and decouple recording from live preview."""
 import csv
 import json
+import logging
 import math
 import threading
 import time
@@ -15,6 +16,8 @@ from .table import TENDONS
 
 POSE_FIELDS = ("elapsed_s", "ros_stamp_ns", "frame", "body", "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw")
 CONTROL_FIELDS = ("elapsed_s", "tendon", "setpoint", "unit", "load_kgf", "position_steps", "output_steps_s")
+VIDEO_FILE = "webcam.mp4"
+logger = logging.getLogger(__name__)
 ACTIVE = {"queued", "running", "stopping"}
 
 
@@ -47,12 +50,13 @@ class Simulated:
 
 
 class Experiments:
-    def __init__(self, root, hardware=None, *, repeat_pause=0.5):
+    def __init__(self, root, hardware=None, *, repeat_pause=0.5, webcam=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.hardware = hardware or Simulated()
         self.simulated = hardware is None
         self.repeat_pause = repeat_pause
+        self.webcam = webcam
         self.lock = threading.RLock()
         self.runs = {}
         self.cancel = threading.Event()
@@ -68,7 +72,8 @@ class Experiments:
         for path in self.root.glob("*/run.json"):
             run = json.loads(path.read_text())
             if run["status"] in ACTIVE:
-                run.update(status="interrupted", error="Service restarted before the trial finished.")
+                run.update(status="interrupted", error="Service restarted before the trial finished.",
+                           has_video=(path.parent / VIDEO_FILE).is_file())
                 write_json(path, run)
             self.runs[run["id"]] = run
 
@@ -106,7 +111,8 @@ class Experiments:
 
     def mark(self, run, status, error=None):
         with self.lock:
-            updated = dict(run, status=status, error=error)
+            has_video = (self.root / run["id"] / VIDEO_FILE).is_file()
+            updated = dict(run, status=status, error=error, has_video=has_video)
             write_json(self.root / run["id"] / "run.json", updated)
             run.update(updated)
 
@@ -176,10 +182,16 @@ class Experiments:
             control_csv.writerow(CONTROL_FIELDS)
             queue = Queue(maxsize=8192)
             latest = {}
+            stop_video = None
             try:
                 self.hardware.open(table, self.cancel)
                 if self.cancel.is_set():
                     return
+                if self.webcam is not None:
+                    try:
+                        stop_video = self.webcam(folder, filename=VIDEO_FILE)
+                    except Exception:
+                        logger.exception("Could not start webcam recording")
                 start = time.monotonic()
                 end = start + table.duration
                 with self.lock:
@@ -221,6 +233,11 @@ class Experiments:
                 try:
                     self.hardware.finish()
                 finally:
+                    if stop_video is not None:
+                        try:
+                            stop_video()
+                        except Exception:
+                            logger.exception("Could not finalize webcam recording")
                     if "start" in locals():
                         self.drain(queue, start, end, pose_csv, latest)
             if self.pose_overrun:

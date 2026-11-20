@@ -102,6 +102,8 @@ class ApiTest(unittest.TestCase):
                 self.wait_for(lambda: all(row["status"] == "complete" for row in client.get("/runs").json()))
                 poses = client.get(f"/runs/{first}/files/poses.csv?download=true")
                 self.assertIn("attachment", poses.headers["content-disposition"])
+                self.assertFalse(client.get("/runs").json()[0]["has_video"])
+                self.assertEqual(client.get(f"/runs/{first}/files/webcam.mp4").status_code, 404)
                 parsed = list(csv.DictReader(io.StringIO(poses.text)))
                 self.assertEqual(tuple(parsed[0]), POSE_FIELDS)
                 self.assertEqual(parsed[0]["body"], "Rigid Body 001")
@@ -113,6 +115,32 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(client.get(f"/runs/{first}/files/poses.csv").content, poses.content)
             self.assertEqual(Experiments(folder).get(first)["status"], "complete")
             self.assertTrue((Path(folder) / first / "review.json").exists())
+
+    def test_optional_webcam_download_on_completion_and_stop(self):
+        def webcam(directory, *, filename):
+            return lambda: (directory / filename).write_bytes(b"mock MP4")
+
+        with tempfile.TemporaryDirectory() as folder:
+            experiment = Experiments(folder, webcam=webcam)
+            with TestClient(create_app(experiment)) as client:
+                for mode, unit, cancel in (("force", "N", False), ("displacement", "mm", True)):
+                    csv_body = EXAMPLE.replace(b"0.30", b"2.00") if cancel else EXAMPLE
+                    response = client.post(f"/runs?mode={mode}&unit={unit}", content=csv_body)
+                    self.assertEqual(response.status_code, 202)
+                    run_id = response.json()[0]["id"]
+                    video_path = f"/runs/{run_id}/files/webcam.mp4?download=true"
+                    if cancel:
+                        self.wait_for(lambda: experiment.get(run_id)["status"] == "running")
+                        self.assertEqual(client.get(video_path).status_code, 404)
+                        client.post(f"/runs/{run_id}/stop").raise_for_status()
+                    expected = "cancelled" if cancel else "complete"
+                    self.wait_for(lambda: experiment.get(run_id)["status"] == expected)
+                    self.wait_for(lambda: not experiment.worker.is_alive())
+                    self.assertTrue(client.get("/runs").json()[0]["has_video"])
+                    video = client.get(video_path)
+                    self.assertEqual(video.content, b"mock MP4")
+                    self.assertEqual(video.headers["content-type"], "video/mp4")
+                    self.assertIn("attachment", video.headers["content-disposition"])
 
     def test_stop_retains_partial_record_and_cancels_queued_trials(self):
         with tempfile.TemporaryDirectory() as folder:

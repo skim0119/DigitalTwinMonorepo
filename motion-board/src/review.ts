@@ -5,7 +5,7 @@ export type Interval = { body: string; start: number; end: number; action: Actio
 export type Review = { include: boolean; intervals: Interval[] };
 export type Point = { pose: Pose; interpolated?: boolean; gap?: boolean; spread?: number; count?: number };
 export type Table = { mode: string; unit: string; duration: number; times: number[]; values: number[][]; interpolation: string };
-export type Run = { id: string; batch: string; sequence?: string; trial: number; label: string; table: Table; status: string; error: string | null; simulated: boolean; created: string };
+export type Run = { id: string; batch: string; sequence?: string; trial: number; label: string; table: Table; status: string; error: string | null; simulated: boolean; has_video?: boolean; created: string };
 export const active = (run: Run) => ['queued', 'running', 'stopping'].includes(run.status);
 export const defaultReview: Review = { include: true, intervals: [] };
 export const maxGap = 0.25;

@@ -9,10 +9,10 @@ from threading import Event, Thread
 logger = logging.getLogger(__name__)
 
 
-def start_recording(directory, *, camera_index=0):
+def start_recording(directory, *, camera_index=0, filename=None):
     """Start recording in directory and return a callable that stops and saves it."""
     stop = Event()
-    worker = Thread(target=_record, args=(Path(directory), camera_index, stop), daemon=True)
+    worker = Thread(target=_record, args=(Path(directory), camera_index, stop, filename), daemon=True)
     worker.start()
 
     def stop_recording():
@@ -22,7 +22,7 @@ def start_recording(directory, *, camera_index=0):
     return stop_recording
 
 
-def _record(directory, camera_index, stop):
+def _record(directory, camera_index, stop, filename):
     try:
         import cv2
     except ImportError:
@@ -31,6 +31,8 @@ def _record(directory, camera_index, stop):
 
     camera = None
     writer = None
+    temporary = None
+    frames = 0
     try:
         if stop.is_set():
             return
@@ -47,14 +49,16 @@ def _record(directory, camera_index, stop):
         height, width = frame.shape[:2]
         directory.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S.%f%z")
-        output = directory / f"webcam-{timestamp}.mp4"
-        writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        output = directory / (filename or f"webcam-{timestamp}.mp4")
+        temporary = directory / f".{output.stem}.partial.mp4"
+        writer = cv2.VideoWriter(str(temporary), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
         if not writer.isOpened():
             logger.warning("Could not open webcam recording at %s", output)
             return
 
         while ok and not stop.is_set():
             writer.write(frame)
+            frames += 1
             ok, frame = camera.read()
     except (OSError, cv2.error):
         logger.exception("Webcam recording stopped")
@@ -63,3 +67,11 @@ def _record(directory, camera_index, stop):
             writer.release()
         if camera is not None:
             camera.release()
+        if temporary is not None:
+            try:
+                if frames and temporary.is_file() and temporary.stat().st_size > 0:
+                    temporary.replace(output)
+                else:
+                    temporary.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Could not finalize webcam recording")

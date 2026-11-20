@@ -8,10 +8,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from .runner import ACTIVE, BusyError, write_json
+from .runner import ACTIVE, VIDEO_FILE, BusyError, write_json
 from .table import MAX_CSV, parse_table
 
-FILES = {"actuation.csv", "poses.csv", "controls.csv", "run.json", "review.json"}
+FILES = {"actuation.csv", "poses.csv", "controls.csv", "run.json", "review.json", VIDEO_FILE}
 
 
 class Interval(BaseModel):
@@ -143,7 +143,7 @@ def create_app(experiments):
         path = experiments.root / run_id / name
         if not path.is_file():
             raise HTTPException(404, "This file is not available for the trial.")
-        media = "text/csv" if path.suffix == ".csv" else "application/json"
+        media = {".csv": "text/csv", ".mp4": "video/mp4", ".json": "application/json"}[path.suffix]
         return FileResponse(path, media_type=media, filename=f"{run_id}_{name}" if download else None)
 
     @app.websocket("/events")

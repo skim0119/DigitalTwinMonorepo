@@ -102,3 +102,18 @@ failure reasons are preserved.
 pip install '.[test]'
 python -m unittest experiment_api.test_experiment -v
 ```
+
+## Optional webcam video
+
+Install OpenCV on the Pi (for example, the system `python3-opencv` package,
+available inside the system-site-packages environment) and connect a webcam.
+At the start of each hardware trial, Experiment API uses the repository webcam
+recorder in the background. The default device is camera 0. Use
+`--camera-index 1` for a different device or `--no-webcam` to disable recording.
+When launching outside the repository root, set `SPIROB_REPO_ROOT` to the checkout.
+
+Completed video is saved as `webcam.mp4` in the trial directory. The recorder
+also finalizes any frames captured before a stop. Motion Board exposes the file
+as **Webcam video (MP4)**. A missing webcam, OpenCV, or usable frames leaves the
+trial's other recordings available. Camera startup can delay the first frame
+relative to actuation. The MP4 is not frame-synchronized with the CSV.

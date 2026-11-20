@@ -356,6 +356,7 @@ function App() {
             <a href={urlFor(focus, 'actuation.csv')}>Actuation CSV</a>
             {focusPoses.length > 0 && <a href={urlFor(focus, 'poses.csv')}>Raw poses CSV</a>}
             {focusControls.length > 0 && <a href={urlFor(focus, 'controls.csv')}>Controls CSV</a>}
+            {current.has_video && <a href={urlFor(focus, 'webcam.mp4')}>Webcam video (MP4)</a>}
             <a href={urlFor(focus, 'run.json')}>Trial metadata</a>
             {(review.intervals.length > 0 || !review.include) && <a href={urlFor(focus, 'review.json')}>Review annotations</a>}
             {canReview && <button disabled={!online || pending} onClick={() => void repeat(current)}>Reuse actuation table</button>}
