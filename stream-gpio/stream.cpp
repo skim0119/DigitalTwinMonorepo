@@ -182,7 +182,7 @@ private:
 };
 
 int main(int argc, char** argv) {
-    const char* usage = "Usage: ./run-stream [--hx711] [-p PORT]\n";
+    const char* usage = "Usage: ./stream-gpio [--hx711] [-p PORT]\n";
     unsigned port = 5050;
     bool hx711 = false;
     for (int i = 1; i < argc; ++i) {

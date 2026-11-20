@@ -5,15 +5,15 @@ Boost.Beast headers. The process needs read access to `/dev/gpiomem`.
 
 ```sh
 make
-./run-stream
-./run-stream -p 5051
+./stream-gpio
+./stream-gpio -p 5051
 ```
 
 The server listens on IPv4 loopback (port 5050 by default). To leave it
 running after SSH logout, start it from this directory.
 
 ```sh
-nohup ./run-stream >stream.log 2>&1 </dev/null &
+nohup ./stream-gpio >stream.log 2>&1 </dev/null &
 echo "$!" >stream.pid
 ```
 
@@ -26,7 +26,7 @@ of BCM GPIO N (0–27). The sampler reads the Pi 4's GPIO level register
 at about 20 Hz without requesting pins or changing their configuration.
 Short motor and HX711 pulses may fall between snapshots.
 
-Start direct HX711 sampling with `./run-stream --hx711`. The streamer
+Start direct HX711 sampling with `./stream-gpio --hx711`. The streamer
 drives all six HX711 clocks, selects channel A at gain 64, and applies
 the existing per-motor offsets and counts-per-kg factors in `stream.cpp`
 to each five-conversion average. Stop other HX711 readers before using
@@ -38,7 +38,7 @@ fetches the latest measurements over local UDP, separately from the
 WebSocket refresh. It waits up to five seconds for fresh readings on
 all selected channels before starting and stops on a failed fetch or a
 reading at least one second old. For a custom port, set
-`SPIROB_MONITOR_PORT=5051` to match `./run-stream --hx711 -p 5051`.
+`SPIROB_MONITOR_PORT=5051` to match `./stream-gpio --hx711 -p 5051`.
 
 The WebSocket `hx711` array is indexed by motor (0–5). Each entry contains
 `raw` and `kg`, or is `null` when no reading is available or the last one
