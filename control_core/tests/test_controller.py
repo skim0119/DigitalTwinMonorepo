@@ -1,0 +1,96 @@
+import socket
+import sys
+import threading
+import time
+import unittest
+from pathlib import Path
+
+from control_core import open_controller
+
+
+class NativeControllerTest(unittest.TestCase):
+    def setUp(self):
+        self.force = 0.05
+        self.publish = True
+        self.streaming = threading.Event()
+        self.streaming.set()
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(self.socket.close)
+        self.socket.bind(("127.0.0.1", 0))
+        self.socket.settimeout(0.05)
+        worker = threading.Thread(target=self.serve)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(self.streaming.clear)
+        self.controller = open_controller(
+            Path(__file__).resolve().parents[2] / "pins.json",
+            [(-3, 3)] * 6, port=self.socket.getsockname()[1],
+            max_force=1, max_rate=150, simulate=True,
+        )
+        self.addCleanup(self.controller.stop)
+        self.wait_for(self.controller.ready)
+
+    def serve(self):
+        # Match the C++ steady_clock used by the streamer on each platform.
+        clock = time.CLOCK_MONOTONIC_RAW if sys.platform == "darwin" else time.CLOCK_MONOTONIC
+        stamp = 0
+        while self.streaming.is_set():
+            try:
+                request, sender = self.socket.recvfrom(512)
+            except socket.timeout:
+                continue
+            if request == b"hx711-fast":
+                now = time.clock_gettime_ns(clock)
+                if self.publish and now - stamp >= 10_000_000:
+                    stamp = now
+                self.socket.sendto(f"{stamp} {self.force}\n".encode() * 6, sender)
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 2
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, "Native controller did not reach expected state")
+            time.sleep(0.005)
+
+    def test_force_all_channels_and_position_bounds(self):
+        self.controller.command([0.2] * 6, True, 0.2)
+        self.wait_for(lambda: all(steps == 3 for _, steps, _ in self.controller.status()))
+        self.wait_for(lambda: all(speed == 0 for _, _, speed in self.controller.status()))
+
+    def test_expired_command_stops_and_cannot_restart(self):
+        self.controller.command([3] * 6, False, 0.03)
+        time.sleep(0.05)
+        with self.assertRaisesRegex(RuntimeError, "expired"):
+            self.controller.command([0] * 6, False, 0.1)
+        self.wait_for(lambda: all(speed == 0 for _, _, speed in self.controller.status()))
+
+    def test_duplicate_timestamps_do_not_refresh_sensor_deadline(self):
+        self.publish = False
+
+        def refresh_until_stale():
+            try:
+                self.controller.command([0.2] * 6, True, 0.2)
+            except RuntimeError as error:
+                self.assertIn("stale", str(error))
+                return True
+            return False
+
+        self.wait_for(refresh_until_stale)
+        self.wait_for(lambda: all(speed == 0 for _, _, speed in self.controller.status()))
+
+    def test_over_tension_uses_unfiltered_conversion(self):
+        self.controller.command([0.2] * 6, True, 0.2)
+        self.force = 1.1
+
+        def faulted():
+            try:
+                self.controller.ready()
+            except RuntimeError as error:
+                self.assertIn("tension", str(error))
+                return True
+            return False
+
+        self.wait_for(faulted)
+
+
+if __name__ == "__main__":
+    unittest.main()

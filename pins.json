@@ -8,6 +8,7 @@
     "sck": "Pi output to the HX711 PD_SCK pin"
   },
   "pid_deadband_g": 3.0,
+  "pid_filter_alpha": 0.4,
   "motors": [
     {"motor": 0, "pul": 18, "dir": 14, "dout": 2, "sck": 3, "pid": {"kp": 550.0, "ki": 10.0, "kd": 5.0}},
     {"motor": 1, "pul": 10, "dir": 9, "dout": 5, "sck": 6, "pid": {"kp": 550.0, "ki": 10.0, "kd": 5.0}},
