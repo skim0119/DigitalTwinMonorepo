@@ -140,8 +140,9 @@
   const hx711 = document.querySelector('#hx711');
   hx711.insertAdjacentHTML('afterbegin', `<div class="table-wrap" tabindex="0" aria-label="HX711 loads"><table>
     <thead><tr><th>Motor</th><th>Raw counts</th><th>Load (kg)</th>
+      <th title="RMS difference between measured load and EMA over the last 10 seconds">Noise (g)</th>
       <th class="plot-column">Load history (kg) · EMA α 0.20<div class="axis"><span>−10 s</span><span>−5 s</span><span>Latest</span></div></th></tr></thead>
-    <tbody>${groups[0].pins.map((_, motor) => `<tr><th scope="row">Motor ${motor}</th><td>—</td><td>—</td>
+    <tbody>${groups[0].pins.map((_, motor) => `<tr><th scope="row">Motor ${motor}</th><td>—</td><td>—</td><td>—</td>
       <td><div class="load-plot"><canvas class="plot" role="img" aria-label="Motor ${motor} load and EMA history in kg"></canvas>
       <div class="axis"><span>—</span><span>—</span></div></div></td></tr>`).join('')}</tbody>
     </table></div>`);
@@ -178,6 +179,19 @@
 
   const status = document.querySelector('#status');
   const rtt = document.querySelector('#rtt');
+  function loadNoiseGrams(motor) {
+    let squared = 0;
+    let count = 0;
+    for (const {kg, kg_ema} of history) {
+      const load = kg[motor];
+      const average = kg_ema[motor];
+      if (!Number.isFinite(load) || !Number.isFinite(average)) continue;
+      squared += (load - average) ** 2;
+      count++;
+    }
+    return count >= 2 ? 1000 * Math.sqrt(squared / count) : null;
+  }
+
   function render(state) {
     const text = state ? `${state.target} · ${state.status}` : 'Dashboard disconnected';
     if (status.textContent !== text) status.textContent = text;
@@ -187,6 +201,8 @@
       const reading = state?.hx711?.[motor];
       row.cells[1].textContent = reading ? reading.raw.toFixed(1) : '—';
       row.cells[2].textContent = reading ? reading.kg.toFixed(3) : '—';
+      const noise = reading ? loadNoiseGrams(motor) : null;
+      row.cells[3].textContent = noise?.toFixed(1) ?? '—';
     });
     for (const [pin, control] of controls) {
       const channel = state?.channels[pin];
