@@ -36,7 +36,7 @@ class Motors:
         self._motor_running: list[bool] = [False] * len(pul_pins)
         
         self._pulse_counter_targets: list[int] = [-1, -1, -1] * len(pul_pins)
-        self._pulse_in_high_phase: bool = False
+        self._pulse_in_high_phase = [False] * len(pul_pins)
 
         # check if RPM is too high
         min_step_time = 2 * self.pulse_width
@@ -125,9 +125,10 @@ class Motors:
         assert 0 <= index < len(self._PUL_devices), "Index out of range for given pins"
 
 
-    def update(self, motor_index: typing.Union[int, list[int]]) -> int:
+    def update(self, motor_index: typing.Union[int, list[int]], *, wait: bool = True) -> int:
         """
         Check any running counters and give pulse if necessary. For use in main loop.
+        Pass wait=False when the caller owns STEP timing.
         Returns -- 1 if switched to high, -1 if switched to low, 0 if no change
         """
         def check_counter(device, index):
@@ -135,10 +136,12 @@ class Motors:
                 return 0
         
         
-            if self._pulse_in_high_phase:
+            if self._pulse_in_high_phase[index]:
                 device.off()
                 start_time = self.start_time
-                self._pulse_in_high_phase = False
+                self._pulse_in_high_phase[index] = False
+                if not wait:
+                    return -1
                 sleep_for = (self._get_pulse_low_time(self._motor_speeds[index])) - ((time.time()-start_time)%(self._get_pulse_low_time(self._motor_speeds[index])))
                 sleep_for = sleep_for * (0.5/self.speed)
                 #print("CCCCC", time.time()-start_time)
@@ -152,7 +155,9 @@ class Motors:
                 if self.motor_direction[index] == True: self.num_of_steps[index] += 1
                 else: self.num_of_steps[index] -= 1
     
-                self._pulse_in_high_phase = True
+                self._pulse_in_high_phase[index] = True
+                if not wait:
+                    return 1
                 
                 sleep_for = (self._get_pulse_low_time(self._motor_speeds[index])) - ((time.time()-start_time)%(self._get_pulse_low_time(self._motor_speeds[index])))
                 sleep_for = sleep_for * (0.5/self.speed)

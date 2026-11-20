@@ -90,6 +90,7 @@ fn handle(
                 "live": levels.is_some(),
                 "rtt_ms": state.rtt.map(|rtt| rtt.as_secs_f64() * 1000.0),
                 "channels": channels,
+                "hx711": state.sample.as_ref().map(|sample| &sample.hx711),
                 "history": history,
                 "reset": reset,
             });

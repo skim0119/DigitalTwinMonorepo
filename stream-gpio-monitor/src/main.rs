@@ -19,6 +19,14 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 struct Sample {
     unix_ms: u64,
     levels: u32,
+    #[serde(default)]
+    hx711: [Option<Hx711Reading>; 6],
+}
+
+#[derive(Deserialize, Serialize)]
+struct Hx711Reading {
+    raw: f64,
+    kg: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -44,6 +52,8 @@ struct Point {
     t: u64,
     levels: u32,
     ema: [u8; 28],
+    kg: [Option<f64>; 6],
+    kg_ema: [Option<f64>; 6],
 }
 
 struct State {
@@ -95,10 +105,24 @@ impl State {
         {
             self.history.pop_front();
         }
+        let kg = sample
+            .hx711
+            .each_ref()
+            .map(|reading| reading.as_ref().map(|reading| reading.kg));
+        let previous = self.history.back().filter(|point| t - point.t <= 250);
+        let kg_ema = std::array::from_fn(|motor| {
+            kg[motor].map(|value| {
+                previous
+                    .and_then(|point| point.kg_ema[motor])
+                    .map_or(value, |old| old + 0.20 * (value - old))
+            })
+        });
         self.history.push_back(Point {
             id: self.next_id,
             t,
             levels: sample.levels,
+            kg,
+            kg_ema,
             ema: self
                 .channels
                 .map(|channel| (channel.average.unwrap_or_default() * 100.0).round() as u8),
@@ -284,20 +308,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn smooths_hx711_load_and_resets_after_missing_reading() {
+        let mut state = State::default();
+        for (unix_ms, kg) in [
+            (1, Some(-1.0)),
+            (51, Some(4.0)),
+            (101, None),
+            (151, Some(2.0)),
+        ] {
+            let mut hx711 = std::array::from_fn(|_| None);
+            hx711[0] = kg.map(|kg| Hx711Reading { raw: 0.0, kg });
+            state.update(Sample {
+                unix_ms,
+                levels: 0,
+                hx711,
+            });
+        }
+        assert_eq!(state.history[1].kg[0], Some(4.0));
+        assert_eq!(state.history[1].kg_ema[0], Some(0.0));
+        assert_eq!(state.history[1].kg_ema[1], None);
+        assert_eq!(state.history[2].kg_ema[0], None);
+        assert_eq!(state.history[3].kg_ema[0], Some(2.0));
+    }
+
+    #[test]
+    fn accepts_hx711_readings_and_older_gpio_frames() {
+        let old: Sample = serde_json::from_str(r#"{"unix_ms":1,"levels":0}"#).unwrap();
+        assert!(old.hx711.iter().all(Option::is_none));
+        let sample: Sample = serde_json::from_str(
+            r#"{"unix_ms":2,"levels":0,"hx711":[null,{"raw":-285116.4,"kg":0.125},null,null,null,null]}"#,
+        )
+        .unwrap();
+        let reading = sample.hx711[1].as_ref().unwrap();
+        assert_eq!(reading.raw, -285116.4);
+        assert_eq!(reading.kg, 0.125);
+    }
+
+    #[test]
     fn smooths_each_pin_once_per_sample() {
         let mut state = State::default();
         state.channels[2].alpha = 50;
         assert!(state.update(Sample {
             unix_ms: 1,
-            levels: 0
+            levels: 0,
+            hx711: Default::default(),
         }));
         assert!(state.update(Sample {
             unix_ms: 2,
-            levels: (1 << 2) | (1 << 3)
+            levels: (1 << 2) | (1 << 3),
+            hx711: Default::default(),
         }));
         assert!(!state.update(Sample {
             unix_ms: 2,
-            levels: 0
+            levels: 0,
+            hx711: Default::default(),
         }));
         assert_eq!(state.channels[2].average, Some(0.5));
         assert_eq!(state.channels[3].average, Some(0.2));
@@ -307,6 +371,7 @@ mod tests {
         state.update(Sample {
             unix_ms: 10_003,
             levels: 0,
+            hx711: Default::default(),
         });
         assert_eq!(state.history.len(), 1);
         assert_eq!(state.history[0].id, 3);

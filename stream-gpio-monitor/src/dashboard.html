@@ -26,6 +26,9 @@
   .plot-key i { display: inline-block; width: 18px; border-top: 2px solid #274a6a; }
   .plot-key .smooth { border-color: #a45808; border-top-style: dashed; }
   .plot { display: block; width: 100%; height: 36px; }
+  .load-plot .plot { height: 46px; }
+  .load-plot { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+  .load-plot .axis { flex-direction: column; text-align: right; height: 46px; margin: 0; }
   .axis { display: flex; justify-content: space-between; gap: 4px; font-size: .72rem; font-weight: 400; margin-top: 2px; }
   .reading { font-size: .76rem; color: var(--muted); margin-top: 2px; }
   .plot-column { width: 62%; min-width: 180px; }
@@ -65,9 +68,8 @@
     <button id="motor-tab" role="tab" aria-controls="motor" aria-selected="false" tabindex="-1">Motor outputs</button>
   </nav>
   <div class="plot-key">
-    <span><i aria-hidden="true"></i>Sampled GPIO</span>
+    <span><i aria-hidden="true"></i>Measured load / GPIO level</span>
     <span><i class="smooth" aria-hidden="true"></i>EMA</span>
-    <span>High at top · Low at bottom</span>
   </div>
   <section id="hx711" role="tabpanel" aria-labelledby="hx711-tab"></section>
   <section id="motor" role="tabpanel" aria-labelledby="motor-tab" hidden></section>
@@ -135,6 +137,25 @@
     }
   }
 
+  const hx711 = document.querySelector('#hx711');
+  hx711.insertAdjacentHTML('afterbegin', `<div class="table-wrap" tabindex="0" aria-label="HX711 loads"><table>
+    <thead><tr><th>Motor</th><th>Raw counts</th><th>Load (kg)</th>
+      <th class="plot-column">Load history (kg) · EMA α 0.20<div class="axis"><span>−10 s</span><span>−5 s</span><span>Latest</span></div></th></tr></thead>
+    <tbody>${groups[0].pins.map((_, motor) => `<tr><th scope="row">Motor ${motor}</th><td>—</td><td>—</td>
+      <td><div class="load-plot"><canvas class="plot" role="img" aria-label="Motor ${motor} load and EMA history in kg"></canvas>
+      <div class="axis"><span>—</span><span>—</span></div></div></td></tr>`).join('')}</tbody>
+    </table></div>`);
+  const loadRows = hx711.querySelectorAll('.table-wrap:first-child tbody tr');
+  const plots = [
+    ...Array.from(loadRows, (row, motor) => ({
+      plot: row.querySelector('canvas'), axis: row.querySelectorAll('.axis span'),
+      value: (point, raw) => (raw ? point.kg : point.kg_ema)[motor],
+    })),
+    ...Array.from(controls, ([pin, {plot}]) => ({
+      plot, stepped: true, value: (point, raw) => raw ? (point.levels >>> pin) & 1 : point.ema[pin] / 100,
+    })),
+  ];
+
   const tabs = [...document.querySelectorAll('[role=tab]')];
   function selectTab(index) {
     tabs.forEach((tab, i) => {
@@ -162,6 +183,11 @@
     if (status.textContent !== text) status.textContent = text;
     status.classList.toggle('live', Boolean(state?.live));
     rtt.textContent = state?.rtt_ms == null ? '—' : `${state.rtt_ms.toFixed(1)} ms`;
+    loadRows.forEach((row, motor) => {
+      const reading = state?.hx711?.[motor];
+      row.cells[1].textContent = reading ? reading.raw.toFixed(1) : '—';
+      row.cells[2].textContent = reading ? reading.kg.toFixed(3) : '—';
+    });
     for (const [pin, control] of controls) {
       const channel = state?.channels[pin];
       control.level.textContent = channel?.level == null ? '—' : channel.level ? 'HIGH' : 'LOW';
@@ -175,7 +201,7 @@
   function drawPlots() {
     const end = history.at(-1)?.t;
     const scale = window.devicePixelRatio || 1;
-    for (const [pin, {plot}] of controls) {
+    for (const {plot, axis, stepped, value} of plots) {
       const width = Math.round(plot.clientWidth * scale);
       const height = Math.round(plot.clientHeight * scale);
       if (!width || !height) continue;
@@ -183,6 +209,21 @@
       if (plot.height !== height) plot.height = height;
       const ctx = plot.getContext('2d');
       ctx.clearRect(0, 0, width, height);
+      let low = 0;
+      let high = 1;
+      if (axis) {
+        const values = history.flatMap(point => [value(point, true), value(point, false)]).filter(Number.isFinite);
+        axis[0].textContent = axis[1].textContent = '—';
+        if (!values.length) continue;
+        low = Math.floor(Math.min(...values) * 1000) / 1000;
+        high = Math.ceil(Math.max(...values) * 1000) / 1000;
+        if (low === high) {
+          low -= 0.001;
+          high += 0.001;
+        }
+        axis[0].textContent = high.toFixed(3);
+        axis[1].textContent = low.toFixed(3);
+      }
       const pad = 3 * scale;
       const y = (value) => height - pad - value * (height - 2 * pad) + 0.5;
       ctx.lineWidth = scale;
@@ -205,11 +246,15 @@
         let previous = null;
         for (const point of history) {
           const x = (1 - (end - point.t) / windowMs) * (width - scale);
-          const value = raw ? (point.levels >>> pin) & 1 : point.ema[pin] / 100;
-          const level = y(value);
+          const sample = value(point, raw);
+          if (sample == null) {
+            previous = null;
+            continue;
+          }
+          const level = y((sample - low) / (high - low));
           if (!previous || point.t - previous.t > 250) {
             ctx.moveTo(x - scale, level);
-          } else if (raw) {
+          } else if (raw && stepped) {
             ctx.lineTo(x, previous.level);
           }
           ctx.lineTo(x, level);
