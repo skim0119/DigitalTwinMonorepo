@@ -25,6 +25,31 @@ to build with the toolchain that has the WebAssembly target.
 Use `cargo run -- spirob:5051` to change the remote port. A numeric address
 such as `127.0.0.1:5051` connects directly, for example to a manual tunnel.
 
+## Try the dashboard without the Pi
+
+From this directory, run the simulator and monitor in separate terminals
+after building the dashboard:
+
+```sh
+cargo run --example simulate_spirob
+```
+
+```sh
+SPIROB_DASHBOARD_PORT=8081 cargo run -- 127.0.0.1:5051
+```
+
+Open [the simulated dashboard](http://127.0.0.1:8081). The simulator sends
+six HX711 loads and changing motor and HX711 pin levels about 20 times a
+second. Both processes bind to IPv4 loopback. Press Ctrl+C in each terminal
+to stop them.
+
+The root [pin map](../pins.json) lists the BCM GPIO connections for all six
+motors and HX711s. The simulator reads this map at build time. When changing
+physical wiring, update the corresponding pin assignments in the Pi
+streamer, Python motor controller, and dashboard as well.
+
+## Dashboard readings
+
 - **HX711** displays raw counts and calibrated load in kg for each motor
   when the Pi GPIO streamer runs with `--hx711`.
   It plots the last 10 seconds of load in kg alongside an EMA that defaults

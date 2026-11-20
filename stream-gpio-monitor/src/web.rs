@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-const HOST: &str = "127.0.0.1:8080";
+const DEFAULT_PORT: u16 = 8080;
 const DASHBOARD_PAGE: &str = r#"<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -78,6 +78,7 @@ fn response(
 
 fn handle(
     request: Request<Incoming>,
+    host: &str,
     target: &str,
     shared: &Mutex<State>,
     assets: &DashboardAssets,
@@ -86,7 +87,7 @@ fn handle(
     if request
         .headers()
         .get("host")
-        .is_none_or(|host| host != HOST)
+        .is_none_or(|header| header != host)
     {
         return response(
             StatusCode::FORBIDDEN,
@@ -169,6 +170,17 @@ fn handle(
 }
 
 pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> {
+    let port = match std::env::var("SPIROB_DASHBOARD_PORT") {
+        Ok(value) => value.parse::<u16>().ok().filter(|&port| port != 0),
+        Err(std::env::VarError::NotPresent) => Some(DEFAULT_PORT),
+        Err(_) => None,
+    }
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SPIROB_DASHBOARD_PORT must be a port number from 1 to 65535",
+        )
+    })?;
     let mut assets = DashboardAssets::new();
     let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("dashboard/dist");
     load_dashboard_assets(&dist, &dist, &mut assets).map_err(|error| {
@@ -186,8 +198,9 @@ pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> 
         ));
     }
     let assets = Arc::new(assets);
-    let listener = tokio::net::TcpListener::bind(HOST).await?;
-    let url = format!("http://{HOST}");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let host: Arc<str> = listener.local_addr()?.to_string().into();
+    let url = format!("http://{host}");
     println!("Spirob GPIO dashboard: {url}  (Ctrl+C to stop)");
     let opener = if cfg!(target_os = "macos") {
         "open"
@@ -217,13 +230,14 @@ pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> 
             incoming = listener.accept() => {
                 let (stream, _) = incoming?;
                 let (target, shared) = (Arc::clone(&target), Arc::clone(&shared));
+                let host = Arc::clone(&host);
                 let assets = Arc::clone(&assets);
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()
                         .timer(TokioTimer::new())
                         .header_read_timeout(Duration::from_secs(5))
                         .serve_connection(TokioIo::new(stream), service_fn(move |request| {
-                            std::future::ready(Ok::<_, Infallible>(handle(request, &target, &shared, &assets)))
+                            std::future::ready(Ok::<_, Infallible>(handle(request, &host, &target, &shared, &assets)))
                         })).await;
                 });
             }

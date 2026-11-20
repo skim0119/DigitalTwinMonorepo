@@ -1,0 +1,18 @@
+{
+  "board": "Raspberry Pi 4 Model B",
+  "numbering": "BCM GPIO (not physical header pin numbers)",
+  "signals": {
+    "pul": "Pi output to the motor driver STEP/PUL input",
+    "dir": "Pi output to the motor driver DIR input",
+    "dout": "Pi input from the HX711 DOUT pin",
+    "sck": "Pi output to the HX711 PD_SCK pin"
+  },
+  "motors": [
+    {"motor": 0, "pul": 18, "dir": 14, "dout": 2, "sck": 3},
+    {"motor": 1, "pul": 10, "dir": 9, "dout": 5, "sck": 6},
+    {"motor": 2, "pul": 4, "dir": 27, "dout": 7, "sck": 11},
+    {"motor": 3, "pul": 23, "dir": 1, "dout": 21, "sck": 13},
+    {"motor": 4, "pul": 22, "dir": 25, "dout": 17, "sck": 20},
+    {"motor": 5, "pul": 26, "dir": 0, "dout": 12, "sck": 19}
+  ]
+}
