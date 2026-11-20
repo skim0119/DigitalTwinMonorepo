@@ -13,6 +13,8 @@ __pycache__/
 *.png
 *.pdf
 
+/target/
+
 # Distribution / packaging
 .Python
 build/
