@@ -1,24 +1,11 @@
+import argparse
+import sys
 import time
 from math import sqrt
-import sys
-sys.path.append('/home/mgazzola/spirob_py_code/Spirob_Code/core_nodes/motor')
-from motors import Motors
-import pygame
-from pygame._sdl2 import controller
-
-pygame.init()
-pygame.joystick.init()
-joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-joy = pygame.joystick.Joystick(0)
-joy.init()
-controller.init()
-gamepad = controller.Controller(0) if controller.is_controller(0) else None
+from pathlib import Path
 
 # ----------------------------------------------------------------------
-# Pin setup for 6 motors.
-# The first 4 entries match your existing wiring. FILL IN the GPIO pin
-# numbers for the two new motors (positions 4 and 5) based on how you've
-# actually wired them.
+# BCM pin pairs in the controller's button-mapping order.
 # ----------------------------------------------------------------------
 PUL = [4, 23, 22, 26, 10, 18]       
 DIR = [27, 1, 25, 0, 9, 14]       
@@ -51,6 +38,10 @@ DIR_GUARD_S = 10e-6  # Match the provisional guard used in PID_multi.py.
 
 
 def make_motors():
+    motor_dir = Path(__file__).resolve().parents[1] / "Spirob_Code/core_nodes/motor"
+    sys.path.insert(0, str(motor_dir))
+    from motors import Motors
+
     return Motors(
         PUL,
         DIR,
@@ -162,11 +153,7 @@ def jog_motor(motors, motor_button, motor_index, instance_id, *, return_on_relea
 
 
 def print_button_indices():
-    """
-    Run this once (e.g. `python -c "from xbox_controller_6motors import print_button_indices; print_button_indices()"`),
-    press each controller button you plan to use, and note the index it
-    prints. Use those numbers to fill in BUTTON_TO_MOTOR above.
-    """
+    """Print button indices for BUTTON_TO_MOTOR."""
     print("Press buttons to see their index (Ctrl+C to stop)...")
     try:
         while True:
@@ -179,6 +166,25 @@ def print_button_indices():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Jog the six Spirob motors with an Xbox controller.")
+    parser.add_argument("--list-buttons", action="store_true", help="Print button indices without driving motors.")
+    args = parser.parse_args()
+
+    import pygame
+    from pygame._sdl2 import controller
+
+    pygame.init()
+    pygame.joystick.init()
+    if not pygame.joystick.get_count():
+        parser.error("Connect an Xbox controller first.")
+    joy = pygame.joystick.Joystick(0)
+    joy.init()
+    if args.list_buttons:
+        print_button_indices()
+        sys.exit()
+
+    controller.init()
+    gamepad = controller.Controller(0) if controller.is_controller(0) else None
     instance_id = joy.get_instance_id()
     motors = make_motors()
     if gamepad is None:
