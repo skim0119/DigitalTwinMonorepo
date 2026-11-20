@@ -370,7 +370,8 @@ def main(motor=None, *, tuning=None, duration_s=None):
                 dt = now - last_pid_time
                 last_pid_time = now
                 for ch, (force, deadline) in zip(channels, loads):
-                    ch.step(now, dt, start_time, force, deadline)
+                    pulse_deadline = int(min(deadline, end_time * 1e9))
+                    ch.step(now, dt, start_time, force, pulse_deadline)
 
                 if now - last_print_time >= 0.2:
                     print("  |  ".join(
@@ -390,6 +391,8 @@ def main(motor=None, *, tuning=None, duration_s=None):
         for ch in channels:
             save_log_csv(ch, csv_path)
         save_combined_plot(channels, plot_path)
+
+    return channels
 
 
 if __name__ == "__main__":
