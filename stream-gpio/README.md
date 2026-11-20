@@ -7,7 +7,12 @@ Boost.Beast headers. The process needs read and write access to `/dev/gpiomem`.
 make
 ./stream-gpio
 ./stream-gpio -p 5051
+./stream-gpio --dry-run
 ```
+
+With `--dry-run`, the streamer reads live GPIO and HX711 data and prints one
+JSON frame per line to stdout at about 20 Hz. It opens no TCP or UDP sockets.
+Stop any other HX711 reader before using this mode.
 
 The server listens on IPv4 loopback (port 5050 by default). To leave it
 running after SSH logout, start it from this directory.

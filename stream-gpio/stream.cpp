@@ -176,13 +176,18 @@ private:
 };
 
 int main(int argc, char** argv) {
-    const char* usage = "Usage: ./stream-gpio [-p PORT]\n";
+    const char* usage = "Usage: ./stream-gpio [--dry-run] [-p PORT]\n";
     unsigned port = 5050;
+    bool dry_run = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         if (arg == "--help") {
             std::cout << usage;
             return 0;
+        }
+        if (arg == "--dry-run") {
+            dry_run = true;
+            continue;
         }
         if (arg == "-p" && i + 1 < argc) {
             std::string_view value(argv[++i]);
@@ -201,9 +206,14 @@ int main(int argc, char** argv) {
     try {
         std::string snapshot;
         asio::io_context io;
-        tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), static_cast<unsigned short>(port)});
-        udp::socket telemetry(io, {asio::ip::address_v4::loopback(), static_cast<unsigned short>(port)});
-        telemetry.non_blocking(true);
+        tcp::acceptor acceptor(io);
+        udp::socket telemetry(io);
+        if (!dry_run) {
+            const auto address = asio::ip::address_v4::loopback();
+            acceptor = tcp::acceptor(io, {address, static_cast<unsigned short>(port)});
+            telemetry = udp::socket(io, {address, static_cast<unsigned short>(port)});
+            telemetry.non_blocking(true);
+        }
         GpioLevels gpio;
         udp::endpoint sender;
         std::array<char, 128> packet;
@@ -275,6 +285,7 @@ int main(int argc, char** argv) {
             }
             frame << "]}";
             snapshot = frame.str();
+            if (dry_run) std::cout << snapshot << std::endl;
             timer.expires_after(50ms);
             timer.async_wait([&](beast::error_code error) { if (!error) sample(); });
         };
@@ -313,9 +324,11 @@ int main(int argc, char** argv) {
 
         read_load_cells();
         sample();
-        receive();
-        accept();
-        std::cout << "Streaming GPIO on ws://127.0.0.1:" << port << std::endl;
+        if (!dry_run) {
+            receive();
+            accept();
+            std::cout << "Streaming GPIO on ws://127.0.0.1:" << port << std::endl;
+        }
         io.run();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
