@@ -9,14 +9,58 @@ use hyper::{
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::json;
 use std::{
+    collections::HashMap,
     convert::Infallible,
     io,
+    path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 const HOST: &str = "127.0.0.1:8080";
+const DASHBOARD_PAGE: &str = r#"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spirob GPIO monitor</title>
+<link rel="stylesheet" href="/dashboard.css">
+<div id="main"></div>
+<script type="module">
+  import("/dashboard-assets/dashboard.js").then(({ default: init }) => init()).catch(() => {
+    document.getElementById("main").textContent = "Could not load the dashboard.";
+  });
+</script>
+</html>"#;
+
+type DashboardAssets = HashMap<String, (&'static str, Bytes)>;
+
+fn load_dashboard_assets(
+    dist: &Path,
+    directory: &Path,
+    assets: &mut DashboardAssets,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            load_dashboard_assets(dist, &path, assets)?;
+        } else if file_type.is_file() {
+            let content_type = match path.extension().and_then(|extension| extension.to_str()) {
+                Some("js") => "text/javascript; charset=utf-8",
+                Some("wasm") => "application/wasm",
+                _ => continue,
+            };
+            let name = path.strip_prefix(dist).unwrap().to_string_lossy();
+            assets.insert(
+                format!("/dashboard-assets/{name}"),
+                (content_type, std::fs::read(&path)?.into()),
+            );
+        }
+    }
+    Ok(())
+}
 
 fn response(
     status: StatusCode,
@@ -36,6 +80,7 @@ fn handle(
     request: Request<Incoming>,
     target: &str,
     shared: &Mutex<State>,
+    assets: &DashboardAssets,
 ) -> Response<Full<Bytes>> {
     let text = "text/plain; charset=utf-8";
     if request
@@ -51,11 +96,16 @@ fn handle(
     }
 
     match (request.method(), request.uri().path()) {
-        (&Method::GET, "/") => response(
+        (&Method::GET, "/") => response(StatusCode::OK, "text/html; charset=utf-8", DASHBOARD_PAGE),
+        (&Method::GET, "/dashboard.css") => response(
             StatusCode::OK,
-            "text/html; charset=utf-8",
-            include_str!("dashboard.html"),
+            "text/css; charset=utf-8",
+            include_str!("../dashboard/src/dashboard.css"),
         ),
+        (&Method::GET, path) if path.starts_with("/dashboard-assets/") => match assets.get(path) {
+            Some((content_type, bytes)) => response(StatusCode::OK, content_type, bytes.clone()),
+            None => response(StatusCode::NOT_FOUND, text, "Not found."),
+        },
         (&Method::GET, "/api/state") => {
             let after = request
                 .uri()
@@ -119,6 +169,23 @@ fn handle(
 }
 
 pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> {
+    let mut assets = DashboardAssets::new();
+    let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("dashboard/dist");
+    load_dashboard_assets(&dist, &dist, &mut assets).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Could not load dashboard assets. Run make dashboard: {error}"),
+        )
+    })?;
+    if !assets.contains_key("/dashboard-assets/dashboard.js")
+        || !assets.contains_key("/dashboard-assets/dashboard_bg.wasm")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Dashboard assets are missing. Run make dashboard.",
+        ));
+    }
+    let assets = Arc::new(assets);
     let listener = tokio::net::TcpListener::bind(HOST).await?;
     let url = format!("http://{HOST}");
     println!("Spirob GPIO dashboard: {url}  (Ctrl+C to stop)");
@@ -150,12 +217,13 @@ pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> 
             incoming = listener.accept() => {
                 let (stream, _) = incoming?;
                 let (target, shared) = (Arc::clone(&target), Arc::clone(&shared));
+                let assets = Arc::clone(&assets);
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()
                         .timer(TokioTimer::new())
                         .header_read_timeout(Duration::from_secs(5))
                         .serve_connection(TokioIo::new(stream), service_fn(move |request| {
-                            std::future::ready(Ok::<_, Infallible>(handle(request, &target, &shared)))
+                            std::future::ready(Ok::<_, Infallible>(handle(request, &target, &shared, &assets)))
                         })).await;
                 });
             }

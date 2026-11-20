@@ -1,0 +1,53 @@
+:root { color-scheme: light; font: 15px/1.5 system-ui, sans-serif; color: #172922; background: #f4f7f4; --muted: #50635b; --accent: #11654b; --line: #d5e0d9; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1060px; margin: auto; padding: clamp(16px, 5vw, 48px); }
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.035em; }
+p { margin: 0; }
+#status { color: var(--muted); overflow-wrap: anywhere; }
+#status.live { color: var(--accent); }
+.metric { border: 1px solid var(--line); background: white; padding: 8px 14px; border-radius: 10px; }
+.metric span { color: var(--muted); margin-right: 8px; }
+#rtt { display: inline-block; min-width: 5.5ch; }
+nav { display: flex; gap: 6px; margin-top: 24px; border-bottom: 1px solid var(--line); }
+button { font: inherit; cursor: pointer; background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent; padding: 10px 12px 9px; }
+button:hover { background: #e9f1eb; }
+button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: 650; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.plot-key { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); margin-top: 10px; font-size: .88rem; }
+.plot-key span { display: inline-flex; gap: 6px; align-items: center; }
+.plot-key i { display: inline-block; width: 18px; border-top: 2px solid #274a6a; }
+.plot-key .smooth { border-color: #a45808; border-top-style: dashed; }
+.plot { display: block; width: 100%; height: 36px; }
+.load-plot .plot { height: 46px; }
+.load-plot { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.load-plot .axis { flex-direction: column; text-align: right; height: 46px; margin: 0; }
+.axis { display: flex; justify-content: space-between; gap: 4px; font-size: .72rem; font-weight: 400; margin-top: 2px; }
+.reading { font-size: .76rem; color: var(--muted); margin-top: 2px; }
+.plot-column { width: 62%; min-width: 180px; }
+.table-wrap { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+table { border-spacing: 0; width: 100%; min-width: 520px; text-align: left; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 12px; white-space: nowrap; }
+thead { background: #edf3ee; color: var(--muted); font-size: .87rem; }
+tbody + tbody :is(th, td) { border-top: 1px solid var(--line); }
+tbody th { font-weight: 650; }
+tbody tr:hover { background: #f5f8f5; }
+.level { display: inline-block; width: 4.6em; text-align: center; background: #edf1ef; color: #465950; font-weight: 650; font-size: .78rem; border-radius: 5px; padding: 2px 0; }
+.level.high { color: #08553b; background: #daf0e5; }
+.alpha { display: flex; align-items: center; gap: 8px; }
+.alpha input { width: clamp(68px, 14vw, 138px); accent-color: var(--accent); cursor: pointer; }
+.alpha output { width: 4ch; }
+footer { color: var(--muted); margin: 8px 0 0; font-size: .88rem; }
+#error { color: #962b26; }
+@media (max-width: 600px) {
+  main { padding: 14px; }
+  h1 { font-size: 1.6rem; }
+  table { min-width: 345px; font-size: .85rem; }
+  thead { font-size: .76rem; }
+  th, td { padding-inline: 5px; }
+  .level { width: 3.7em; font-size: .7rem; }
+  .plot-column { min-width: 145px; }
+  .alpha { gap: 4px; }
+  .alpha input { width: 53px; margin-inline: 0; }
+}
