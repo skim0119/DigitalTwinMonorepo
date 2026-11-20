@@ -1,15 +1,18 @@
 import time
+from math import sqrt
 import sys
 sys.path.append('/home/mgazzola/spirob_py_code/Spirob_Code/core_nodes/motor')
 from motors import Motors
 import pygame
-from pygame import joystick
+from pygame._sdl2 import controller
 
 pygame.init()
 pygame.joystick.init()
 joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
 joy = pygame.joystick.Joystick(0)
 joy.init()
+controller.init()
+gamepad = controller.Controller(0) if controller.is_controller(0) else None
 
 # ----------------------------------------------------------------------
 # Pin setup for 6 motors.
@@ -42,6 +45,7 @@ BUTTON_TO_MOTOR = {
 }
 DIRECTION_MODIFIER_BUTTON = 4  # LB: held = backward, released = forward
 CONTINUOUS_BUTTON = 5  # RB: confirm with print_button_indices()
+RT_THRESHOLD = 16000  # SDL trigger range is 0 to 32767.
 RAMP_TIME_S = 0.4  # Time from stopped to full jog speed (30 RPM).
 DIR_GUARD_S = 10e-6  # Match the provisional guard used in PID_multi.py.
 
@@ -81,22 +85,44 @@ def main_loop(motors, motor_index: int = 0, dir: int = 1, speed: float = 1):
         motors.stop_motor(motor_index)
 
 
-def jog_motor(motors, motor_button, motor_index, instance_id):
+def return_trigger_held():
+    return gamepad is not None and gamepad.get_axis(pygame.CONTROLLER_AXIS_TRIGGERRIGHT) >= RT_THRESHOLD
+
+
+def jog_motor(motors, motor_button, motor_index, instance_id, *, return_on_release=False):
     max_steps_per_sec = motors.max_rpm * motors.steps_per_rev / 60
     speed = 0.0
     direction = None
     last_update = time.monotonic()
     step_progress = 0.0
+    position = 0
+    outbound = None
     try:
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.JOYDEVICEREMOVED and event.instance_id == instance_id:
                     return False
-            if not (joy.get_button(CONTINUOUS_BUTTON) and joy.get_button(motor_button)):
-                return True
-
             now = time.monotonic()
-            target = -1.0 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1.0
+            if outbound is None:
+                modifier_held = (return_trigger_held() if return_on_release
+                                 else joy.get_button(CONTINUOUS_BUTTON))
+                if not (modifier_held and joy.get_button(motor_button)):
+                    if not return_on_release:
+                        return True
+                    outbound = position
+                    speed = 0.0
+                    step_progress = 0.0
+                    last_update = now
+                    print(f"Motor {motor_index}: outbound {outbound:+d} STEP pulses", flush=True)
+
+            if outbound is None:
+                target = -1.0 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1.0
+            else:
+                if position == 0:
+                    return True
+                # Slow down as the remaining return distance shrinks.
+                limit = min(1.0, sqrt(2 * abs(position) / (max_steps_per_sec * RAMP_TIME_S)))
+                target = -limit if position > 0 else limit
             if speed * target < 0:
                 target = 0.0
             elapsed = now - last_update
@@ -124,11 +150,15 @@ def jog_motor(motors, motor_button, motor_index, instance_id):
             # Drop missed steps after a scheduling delay instead of sending a burst.
             step_progress %= 1.0
             motors._pul_motor_on(motor_index)
+            position += 1 if forward else -1
             time.sleep(motors.pulse_width)
             motors._pul_motor_off(motor_index)
             time.sleep(motors.pulse_width)
     finally:
         motors._pul_motor_off(motor_index)
+        if outbound is not None:
+            print(f"Motor {motor_index}: return {position - outbound:+d} STEP pulses, "
+                  f"residual {position:+d}", flush=True)
 
 
 def print_button_indices():
@@ -151,23 +181,33 @@ def print_button_indices():
 if __name__ == "__main__":
     instance_id = joy.get_instance_id()
     motors = make_motors()
+    if gamepad is None:
+        print("SDL controller mapping unavailable; RT return mode is disabled.")
+    returned_button = None
     try:
         while True:
             events = pygame.event.get()
             if any(event.type == pygame.JOYDEVICEREMOVED and event.instance_id == instance_id
                    for event in events):
                 break
-            if joy.get_button(CONTINUOUS_BUTTON):
+            if returned_button is not None and not joy.get_button(returned_button):
+                returned_button = None
+            return_mode = return_trigger_held()
+            if return_mode or joy.get_button(CONTINUOUS_BUTTON):
                 for button, motor_index in BUTTON_TO_MOTOR.items():
-                    if joy.get_button(button):
-                        if not jog_motor(motors, button, motor_index, instance_id):
+                    if button != returned_button and joy.get_button(button):
+                        if not jog_motor(motors, button, motor_index, instance_id,
+                                         return_on_release=return_mode):
                             sys.exit()
+                        if return_mode:
+                            returned_button = button
                         break
             else:
                 for event in events:
                     if event.type == pygame.JOYBUTTONDOWN and event.instance_id == instance_id:
                         motor_index = BUTTON_TO_MOTOR.get(event.button)
-                        if motor_index is not None and not joy.get_button(CONTINUOUS_BUTTON):
+                        if (motor_index is not None and event.button != returned_button
+                                and not joy.get_button(CONTINUOUS_BUTTON) and not return_trigger_held()):
                             direction = -1 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1
                             main_loop(motors, motor_index, direction)
             time.sleep(0.005)
