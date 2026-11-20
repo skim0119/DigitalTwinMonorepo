@@ -132,6 +132,8 @@ function App() {
   const focusControls = controls[focus] ?? emptyControls;
   const duration = Math.max(.01, current?.table.duration ?? 1);
   const last = focusPoses.at(-1)?.[0] ?? focusControls.at(-1)?.[0] ?? 0;
+  const timelineDuration = Math.max(duration, last, ...runs.filter(run => selected.includes(run.id))
+    .map(run => Math.max(run.table.duration, poses[run.id]?.at(-1)?.[0] ?? 0)));
   const time = follow && current && active(current) ? last : cursor;
   const bodies = useMemo(() => [...new Set(selected.flatMap(id => (poses[id] ?? []).map(p => p[3])))].sort(), [poses, selected]);
   const review = reviews[focus] ?? defaultReview;
@@ -244,7 +246,19 @@ function App() {
             <h3>{first.label}</h3><p>{first.table.mode} · {first.table.unit} · {new Date(first.created).toLocaleString()}</p>
             {children.map(run => <div className={focus === run.id ? 'run focused' : 'run'} key={run.id}>
               <input type="checkbox" checked={selected.includes(run.id)} aria-label={`Overlay ${run.label} trial ${run.trial}`}
-                onChange={e => setSelected(ids => e.target.checked ? [...ids, run.id] : ids.filter(id => id !== run.id))} />
+                onChange={e => {
+                  if (e.target.checked) {
+                    if (!focus) choose(run);
+                    else setSelected(ids => [...ids, run.id]);
+                  } else {
+                    setSelected(ids => ids.filter(id => id !== run.id));
+                    if (focus === run.id) {
+                      const next = runs.find(candidate => candidate.id !== run.id && selected.includes(candidate.id));
+                      if (next) choose(next);
+                      else { setFocus(''); setSamples(new Set()); setPicking(false); setCursor(0); }
+                    }
+                  }
+                }} />
               <button onClick={() => choose(run)}>Trial {run.trial}</button>
               <small>{run.status}</small>
             </div>)}
@@ -314,12 +328,12 @@ function App() {
             Trial {runs.find(run => trace.key.startsWith(run.id + ':'))?.trial} · {trace.key.slice(33)}</span>)}
             {mean.length > 0 && <span><i style={{ background: '#fff1cf' }} />Mean</span>}</div>
           <div className="timeline">
-            <div className="timeline-head"><label htmlFor="time">Timeline</label><output>{seconds(time)} / {seconds(duration)} s</output>
+            <div className="timeline-head"><label htmlFor="time">Timeline</label><output>{seconds(time)} / {seconds(timelineDuration)} s</output>
               {current && active(current) && <label className="check"><input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> Follow live</label>}</div>
-            <input id="time" type="range" aria-label="Trial time" min={0} max={duration} step={0.001} value={Math.min(time, duration)}
+            <input id="time" type="range" aria-label="Trial time" min={0} max={timelineDuration} step={0.001} value={Math.min(time, timelineDuration)}
               onChange={e => { setCursor(Number(e.target.value)); setFollow(false); }} />
             {marks.length > 0 && <div className="mark-track" aria-label="Annotated intervals">{marks.map((mark, index) =>
-              <span key={index} title={mark.action} className={mark.action} style={{ left: 100 * mark.start / duration + '%', width: `max(2px, ${100 * (mark.end - mark.start) / duration}%)` }} />)}</div>}
+              <span key={index} title={mark.action} className={mark.action} style={{ left: 100 * mark.start / timelineDuration + '%', width: `max(2px, ${100 * (mark.end - mark.start) / timelineDuration}%)` }} />)}</div>}
             {cursorPose && Math.abs(cursorPose[0] - time) < .1 && <p className="stat">
               Raw {cursorPose[2]} position · {cursorPose.slice(4, 7).map(value => Number(value).toFixed(4)).join(', ')} m
             </p>}
@@ -327,7 +341,7 @@ function App() {
               `${p.pose[3]} · ${p.count} contributing trials · ${((p.spread ?? 0) * 1000).toFixed(2)} mm RMS spread`).join(' | ')}</p>}
             {current && <><label>Tendon<select value={tendon} onChange={e => setTendon(e.target.value)}>
               {Array.from({ length: 6 }, (_, i) => <option key={i} value={`tendon_${i + 1}`}>Tendon {i + 1}</option>)}</select></label>
-              <ControlPlot rows={focusControls} tendon={tendon} time={time} duration={duration} /></>}
+              <ControlPlot rows={focusControls} tendon={tendon} time={time} duration={timelineDuration} /></>}
           </div>
           {canReview && <section className="review"><h3>Review intervals</h3>
             <label className="check"><input type="checkbox" checked={review.include} disabled={pending}
@@ -338,7 +352,7 @@ function App() {
               <select aria-label="Review action" value={action} onChange={e => setAction(e.target.value as Action)}>
                 <option value="flag">Flag interval</option><option value="exclude">Exclude samples</option><option value="interpolate">Interpolate short gap</option>
               </select>
-              <button disabled={pending || !names.length || start === undefined || end === undefined || start >= end}
+              <button disabled={pending || !names.length || start === undefined || end === undefined || start >= end || end > duration}
                 onClick={() => void saveReview({ ...review, intervals: [...review.intervals,
                   ...names.map(name => ({ body: name, start: start!, end: end!, action }))] })}>Apply to {body || 'all bodies'}</button>
             </div>
