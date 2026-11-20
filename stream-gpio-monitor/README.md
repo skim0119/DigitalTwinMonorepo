@@ -51,7 +51,7 @@ streamer, Python motor controller, and dashboard as well.
 ## Dashboard readings
 
 - **HX711** displays raw counts and calibrated load in kg for each motor
-  when the Pi GPIO streamer runs with `--hx711`.
+  while the Pi GPIO streamer is running.
   It plots the last 10 seconds of load in kg alongside an EMA that defaults
   to alpha 0.20. Each load graph has a scroll-adjustable EMA slider.
   Each motor has its own vertical scale. Missing readings leave gaps.

@@ -3,7 +3,6 @@
 #include <array>
 #include <charconv>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -26,41 +25,37 @@ using namespace std::chrono_literals;
 
 class GpioLevels {
 public:
-    explicit GpioLevels(bool hx711) : hx711_(hx711) {
+    GpioLevels() {
         std::ifstream model("/proc/device-tree/model");
         std::string name;
         if (!std::getline(model, name) || name.find("Raspberry Pi 4 Model B") != 0)
             throw std::runtime_error("This GPIO sampler requires a Raspberry Pi 4 Model B");
 
-        int fd = open("/dev/gpiomem", (hx711 ? O_RDWR : O_RDONLY) | O_CLOEXEC);
+        int fd = open("/dev/gpiomem", O_RDWR | O_CLOEXEC);
         if (fd < 0)
             throw std::system_error(errno, std::generic_category(), "open /dev/gpiomem");
-        mapping_ = mmap(nullptr, 4096, PROT_READ | (hx711 ? PROT_WRITE : 0), MAP_SHARED, fd, 0);
+        mapping_ = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         int map_error = errno;
         close(fd);
         if (mapping_ == MAP_FAILED)
             throw std::system_error(map_error, std::generic_category(), "mmap /dev/gpiomem");
-        if (hx711_) {
-            for (std::size_t i = 0; i < clock.size(); ++i) {
-                old_data_mode_[i] = mode(data[i]);
-                old_clock_mode_[i] = mode(clock[i]);
-                set_mode(data[i], 0);
-                write_clock(i, false);
-                set_mode(clock[i], 1);
-                write_clock(i, true);
-                std::this_thread::sleep_for(80us);
-                write_clock(i, false);
-            }
+        for (std::size_t i = 0; i < clock.size(); ++i) {
+            old_data_mode_[i] = mode(data[i]);
+            old_clock_mode_[i] = mode(clock[i]);
+            set_mode(data[i], 0);
+            write_clock(i, false);
+            set_mode(clock[i], 1);
+            write_clock(i, true);
+            std::this_thread::sleep_for(80us);
+            write_clock(i, false);
         }
     }
 
     ~GpioLevels() {
-        if (hx711_) {
-            for (std::size_t i = 0; i < clock.size(); ++i) {
-                write_clock(i, false);
-                set_mode(clock[i], old_clock_mode_[i]);
-                set_mode(data[i], old_data_mode_[i]);
-            }
+        for (std::size_t i = 0; i < clock.size(); ++i) {
+            write_clock(i, false);
+            set_mode(clock[i], old_clock_mode_[i]);
+            set_mode(data[i], old_data_mode_[i]);
         }
         munmap(mapping_, 4096);
     }
@@ -119,7 +114,6 @@ private:
         reg(high ? 0x1c : 0x28) = 1u << clock[motor];
     }
 
-    bool hx711_;
     std::array<uint32_t, 6> old_data_mode_{}, old_clock_mode_{};
     void* mapping_;
 };
@@ -182,18 +176,15 @@ private:
 };
 
 int main(int argc, char** argv) {
-    const char* usage = "Usage: ./stream-gpio [--hx711] [-p PORT]\n";
+    const char* usage = "Usage: ./stream-gpio [-p PORT]\n";
     unsigned port = 5050;
-    bool hx711 = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         if (arg == "--help") {
             std::cout << usage;
             return 0;
         }
-        if (arg == "--hx711") {
-            hx711 = true;
-        } else if (arg == "-p" && i + 1 < argc) {
+        if (arg == "-p" && i + 1 < argc) {
             std::string_view value(argv[++i]);
             auto end = value.data() + value.size();
             auto result = std::from_chars(value.data(), end, port);
@@ -213,7 +204,7 @@ int main(int argc, char** argv) {
         tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), static_cast<unsigned short>(port)});
         udp::socket telemetry(io, {asio::ip::address_v4::loopback(), static_cast<unsigned short>(port)});
         telemetry.non_blocking(true);
-        GpioLevels gpio(hx711);
+        GpioLevels gpio;
         udp::endpoint sender;
         std::array<char, 128> packet;
         struct Reading {
@@ -221,7 +212,7 @@ int main(int argc, char** argv) {
             double kg;
             std::chrono::steady_clock::time_point received;
         };
-        std::array<Reading, 6> readings{};
+        std::array<Reading, 6> readings{}, conversions{};
         asio::steady_timer hx_timer(io);
         struct Average {
             int32_t sum = 0;
@@ -239,12 +230,15 @@ int main(int argc, char** argv) {
                 if (!gpio.conversion(motor, raw)) {
                     average = {};
                     readings[motor] = {};
+                    conversions[motor] = {};
                     continue;
                 }
                 if (!average.gain_selected) {
                     average.gain_selected = true;
                     continue;
                 }
+                conversions[motor] = {double(raw), (raw - offsets[motor]) / factors[motor],
+                                      std::chrono::steady_clock::now()};
                 average.sum += raw;
                 if (++average.count == 5) {
                     const double mean = average.sum / 5.0;
@@ -288,10 +282,11 @@ int main(int argc, char** argv) {
             telemetry.async_receive_from(asio::buffer(packet), sender,
                 [&](beast::error_code error, std::size_t size) {
                     if (!error && size < packet.size()) {
-                        if (hx711 && std::string_view(packet.data(), size) == "hx711") {
+                        const std::string_view request(packet.data(), size);
+                        if (request == "hx711" || request == "hx711-fast") {
                             std::ostringstream response;
                             response.precision(std::numeric_limits<double>::max_digits10);
-                            for (const auto& reading : readings) {
+                            for (const auto& reading : request == "hx711-fast" ? conversions : readings) {
                                 const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     reading.received.time_since_epoch()).count();
                                 response << ns << ' ' << reading.kg << '\n';
@@ -299,14 +294,6 @@ int main(int argc, char** argv) {
                             const auto payload = response.str();
                             beast::error_code ignored;
                             telemetry.send_to(asio::buffer(payload), sender, 0, ignored);
-                        } else if (!hx711) {
-                            std::istringstream input(std::string(packet.data(), size));
-                            std::size_t motor;
-                            double raw, kg;
-                            if (input >> motor >> raw >> kg && motor < readings.size() &&
-                                std::isfinite(raw) && std::isfinite(kg) && (input >> std::ws).eof()) {
-                                readings[motor] = {raw, kg, std::chrono::steady_clock::now()};
-                            }
                         }
                     }
                     if (error != asio::error::operation_aborted) receive();
@@ -324,7 +311,7 @@ int main(int argc, char** argv) {
             });
         };
 
-        if (hx711) read_load_cells();
+        read_load_cells();
         sample();
         receive();
         accept();
