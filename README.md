@@ -14,7 +14,17 @@ In the force-control setup, the Pi service reads the HX711s, Python PID control
 fetches readings over local UDP, and the monitor displays telemetry from the
 WebSocket stream.
 
-## Xbox controller debug tool
+## Debug tools
+
+Install the debug scripts' Python dependencies in your active environment:
+
+```sh
+python3 -m pip install -r debug/requirements.txt
+```
+
+The PID tuner also needs a Raspberry Pi with the HX711 streamer running.
+
+### Xbox controller
 
 On the Pi with an Xbox controller connected, run this from the repo root:
 
@@ -24,3 +34,23 @@ python3 debug/xbox_controller_6motors.py
 
 This uses Pygame and the shared GPIO motor driver. To identify the controller's
 button indices without driving the motors, append `--list-buttons`.
+
+### PID tuning and single-motor jog
+
+[pins.json](pins.json) contains the BCM pin map, each motor's PID gains,
+and the shared force deadband in grams. The PID controller and tuner use
+these gains by default. The tuner's `--kp`, `--ki`, `--kd`, and `--deadband-g`
+options override them for one trial.
+
+With the Pi's HX711 streamer running, use
+`python3 debug/PID_tune_motor.py --help` to see the trial options.
+
+Try a simulated 25-pulse jog before using hardware:
+
+```sh
+python3 debug/simple_cmdline_controller.py 0 forward --steps 25 --dry-run
+```
+
+The jog prints the motor number, BCM pins, requested speed, and pulse count.
+It defaults to 100 pulses at 3 RPM. Remove `--dry-run` to send those pulses
+to the selected motor on the Pi.

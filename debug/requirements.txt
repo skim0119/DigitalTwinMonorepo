@@ -1,0 +1,9 @@
+# Shared motor driver and simulated GPIO
+gpiozero
+
+# Xbox controller
+pygame
+
+# PID tuner and trial plots
+matplotlib
+RPi.GPIO; sys_platform == "linux" and platform_machine in "aarch64 armv8l armv7l armv6l"
