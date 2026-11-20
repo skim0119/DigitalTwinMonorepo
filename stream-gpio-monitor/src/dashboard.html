@@ -140,18 +140,32 @@
   const hx711 = document.querySelector('#hx711');
   hx711.insertAdjacentHTML('afterbegin', `<div class="table-wrap" tabindex="0" aria-label="HX711 loads"><table>
     <thead><tr><th>Motor</th><th>Raw counts</th><th>Load (kg)</th>
-      <th title="RMS difference between measured load and EMA over the last 10 seconds">Noise (g)</th>
-      <th class="plot-column">Load history (kg) · EMA α 0.20<div class="axis"><span>−10 s</span><span>−5 s</span><span>Latest</span></div></th></tr></thead>
+      <th title="10-second RMS difference from the reference EMA (alpha 0.20)">Noise (g)</th>
+      <th class="plot-column">Load history (kg)<div class="axis"><span>−10 s</span><span>−5 s</span><span>Latest</span></div></th><th>EMA alpha</th></tr></thead>
     <tbody>${groups[0].pins.map((_, motor) => `<tr><th scope="row">Motor ${motor}</th><td>—</td><td>—</td><td>—</td>
       <td><div class="load-plot"><canvas class="plot" role="img" aria-label="Motor ${motor} load and EMA history in kg"></canvas>
-      <div class="axis"><span>—</span><span>—</span></div></div></td></tr>`).join('')}</tbody>
+      <div class="axis"><span>—</span><span>—</span></div></div></td>
+      <td><label class="alpha"><input type="range" min="1" max="100" value="20" aria-label="Motor ${motor} load EMA alpha" aria-valuetext="0.20"><output>0.20</output></label></td></tr>`).join('')}</tbody>
     </table></div>`);
   const loadRows = hx711.querySelectorAll('.table-wrap:first-child tbody tr');
   const plots = [
-    ...Array.from(loadRows, (row, motor) => ({
-      plot: row.querySelector('canvas'), axis: row.querySelectorAll('.axis span'),
-      value: (point, raw) => (raw ? point.kg : point.kg_ema)[motor],
-    })),
+    ...Array.from(loadRows, (row, motor) => {
+      const slider = row.querySelector('input');
+      const output = row.querySelector('output');
+      const updateAlpha = () => {
+        output.textContent = (slider.value / 100).toFixed(2);
+        slider.setAttribute('aria-valuetext', output.textContent);
+        drawPlots();
+      };
+      slider.addEventListener('input', updateAlpha);
+      slider.addEventListener('wheel', (event) => {
+        if (event.ctrlKey || !event.deltaY) return;
+        event.preventDefault();
+        slider.value = Number(slider.value) - Math.sign(event.deltaY);
+        updateAlpha();
+      }, {passive: false});
+      return {plot: row.querySelector('canvas'), axis: row.querySelectorAll('.axis span'), slider, motor};
+    }),
     ...Array.from(controls, ([pin, {plot}]) => ({
       plot, stepped: true, value: (point, raw) => raw ? (point.levels >>> pin) & 1 : point.ema[pin] / 100,
     })),
@@ -217,7 +231,7 @@
   function drawPlots() {
     const end = history.at(-1)?.t;
     const scale = window.devicePixelRatio || 1;
-    for (const {plot, axis, stepped, value} of plots) {
+    for (const {plot, axis, stepped, value: gpioValue, slider, motor} of plots) {
       const width = Math.round(plot.clientWidth * scale);
       const height = Math.round(plot.clientHeight * scale);
       if (!width || !height) continue;
@@ -227,8 +241,12 @@
       ctx.clearRect(0, 0, width, height);
       let low = 0;
       let high = 1;
+      let value = gpioValue;
       if (axis) {
-        const values = history.flatMap(point => [value(point, true), value(point, false)]).filter(Number.isFinite);
+        const alpha = slider.value / 100;
+        const smoothed = loadEma(history, motor, alpha);
+        value = (point, raw, index) => raw ? point.kg[motor] : smoothed[index];
+        const values = history.flatMap((point, index) => [value(point, true, index), value(point, false, index)]).filter(Number.isFinite);
         axis[0].textContent = axis[1].textContent = '—';
         if (!values.length) continue;
         low = Math.floor(Math.min(...values) * 1000) / 1000;
@@ -260,9 +278,9 @@
         ctx.setLineDash(raw ? [] : [4 * scale, 3 * scale]);
         ctx.beginPath();
         let previous = null;
-        for (const point of history) {
+        for (const [index, point] of history.entries()) {
           const x = (1 - (end - point.t) / windowMs) * (width - scale);
-          const sample = value(point, raw);
+          const sample = value(point, raw, index);
           if (sample == null) {
             previous = null;
             continue;
@@ -280,6 +298,17 @@
         ctx.setLineDash([]);
       }
     }
+  }
+
+  function loadEma(points, motor, alpha) {
+    if (alpha === 0.20) return points.map(point => point.kg_ema[motor]);
+    let average = null;
+    return points.map((point, index) => {
+      const load = point.kg[motor];
+      if (index && point.t - points[index - 1].t > 250) average = null;
+      average = load == null || average == null ? load : average + alpha * (load - average);
+      return average;
+    });
   }
 
   addEventListener('resize', drawPlots);

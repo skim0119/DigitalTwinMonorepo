@@ -15,9 +15,10 @@ such as `127.0.0.1:5051` connects directly, for example to a manual tunnel.
 
 - **HX711** displays raw counts and calibrated load in kg for each motor
   when the Pi GPIO streamer runs with `--hx711`.
-  It plots the last 10 seconds of load in kg alongside an EMA with alpha 0.20.
+  It plots the last 10 seconds of load in kg alongside an EMA that defaults
+  to alpha 0.20. Each load graph has a scroll-adjustable EMA slider.
   Each motor has its own vertical scale. Missing readings leave gaps.
-  **Noise (g)** is the RMS difference between measured load and its EMA over
+  **Noise (g)** is the RMS difference between measured load and a fixed 0.20 EMA over
   the same window, in grams. Rapid changes in load also raise this value.
   The tab also displays DOUT and SCK pin levels.
 - **Motor outputs** displays PUL and DIR pin levels.
