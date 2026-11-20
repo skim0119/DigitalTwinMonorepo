@@ -41,10 +41,13 @@ BUTTON_TO_MOTOR = {
     7: 5,  # Start/Menu -- CONFIRM with print_button_indices()
 }
 DIRECTION_MODIFIER_BUTTON = 4  # LB: held = backward, released = forward
+CONTINUOUS_BUTTON = 5  # RB: confirm with print_button_indices()
+RAMP_TIME_S = 0.4  # Time from stopped to full jog speed (30 RPM).
+DIR_GUARD_S = 10e-6  # Match the provisional guard used in PID_multi.py.
 
 
-def main_loop(motor_index: int = 0, dir: int = 1, speed: float = 1):
-    motors = Motors(
+def make_motors():
+    return Motors(
         PUL,
         DIR,
         MOTOR_ORIENTATION,
@@ -53,6 +56,7 @@ def main_loop(motor_index: int = 0, dir: int = 1, speed: float = 1):
         pulse_width=10 * 1e-6,
         debug=False)
 
+def main_loop(motors, motor_index: int = 0, dir: int = 1, speed: float = 1):
     print('Running motor', motor_index, 'forward' if dir > 0 else 'backward', 'at speed', speed)
     if dir > 0:
         motors.dir_motor_forward([motor_index])
@@ -68,14 +72,63 @@ def main_loop(motor_index: int = 0, dir: int = 1, speed: float = 1):
     try:
         while Action:
             elapsed = time.time() - start_time
-            motors.update([motor_index])
-            if elapsed > duration:
+            edge = motors.update(motor_index)
+            if elapsed > duration and edge == -1:
                 Action = False
     except KeyboardInterrupt:
         print("\nMain loop interrupted by Ctrl+C.")
     finally:
-        # stops however many motors are configured, instead of a hardcoded [0,1,2,3]
-        motors.stop_motor(list(range(len(PUL))))
+        motors.stop_motor(motor_index)
+
+
+def jog_motor(motors, motor_button, motor_index, instance_id):
+    max_steps_per_sec = motors.max_rpm * motors.steps_per_rev / 60
+    speed = 0.0
+    direction = None
+    last_update = time.monotonic()
+    step_progress = 0.0
+    try:
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.JOYDEVICEREMOVED and event.instance_id == instance_id:
+                    return False
+            if not (joy.get_button(CONTINUOUS_BUTTON) and joy.get_button(motor_button)):
+                return True
+
+            now = time.monotonic()
+            target = -1.0 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1.0
+            if speed * target < 0:
+                target = 0.0
+            elapsed = now - last_update
+            change = elapsed / RAMP_TIME_S
+            speed += max(-change, min(change, target - speed))
+            last_update = now
+
+            if speed == 0.0:
+                step_progress = 0.0
+            step_progress += elapsed * abs(speed) * max_steps_per_sec
+            if step_progress < 1.0:
+                time.sleep(0.0005)
+                continue
+
+            forward = speed > 0
+            if forward != direction:
+                time.sleep(DIR_GUARD_S)
+                if forward:
+                    motors.dir_motor_forward(motor_index)
+                else:
+                    motors.dir_motor_backward(motor_index)
+                time.sleep(DIR_GUARD_S)
+                direction = forward
+
+            # Drop missed steps after a scheduling delay instead of sending a burst.
+            step_progress %= 1.0
+            motors._pul_motor_on(motor_index)
+            time.sleep(motors.pulse_width)
+            motors._pul_motor_off(motor_index)
+            time.sleep(motors.pulse_width)
+    finally:
+        motors._pul_motor_off(motor_index)
 
 
 def print_button_indices():
@@ -96,19 +149,29 @@ def print_button_indices():
 
 
 if __name__ == "__main__":
+    instance_id = joy.get_instance_id()
+    motors = make_motors()
     try:
         while True:
-            pygame.event.pump()
-            for event in pygame.event.get():
-                if event.type == pygame.JOYBUTTONDOWN:
-                    pressed_motor = BUTTON_TO_MOTOR.get(event.button)
-                    if pressed_motor is None:
-                        continue
-                    direction = -1 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1
-                    main_loop(pressed_motor, direction, 1)
-                if event.type == pygame.JOYBUTTONUP:
-                    pass
+            events = pygame.event.get()
+            if any(event.type == pygame.JOYDEVICEREMOVED and event.instance_id == instance_id
+                   for event in events):
+                break
+            if joy.get_button(CONTINUOUS_BUTTON):
+                for button, motor_index in BUTTON_TO_MOTOR.items():
+                    if joy.get_button(button):
+                        if not jog_motor(motors, button, motor_index, instance_id):
+                            sys.exit()
+                        break
+            else:
+                for event in events:
+                    if event.type == pygame.JOYBUTTONDOWN and event.instance_id == instance_id:
+                        motor_index = BUTTON_TO_MOTOR.get(event.button)
+                        if motor_index is not None and not joy.get_button(CONTINUOUS_BUTTON):
+                            direction = -1 if joy.get_button(DIRECTION_MODIFIER_BUTTON) else 1
+                            main_loop(motors, motor_index, direction)
+            time.sleep(0.005)
     except KeyboardInterrupt:
         print("Main loop interrupted")
     finally:
-        pass
+        motors.close()
