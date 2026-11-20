@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+dry_run=
+if [ "${1-}" = "--dry-run" ]; then
+    dry_run=-n
+    shift
+fi
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [--dry-run] [source-directory]" >&2
+    exit 2
+fi
+
+remote_dir=${1-spirob:~/spirob_py_code}
+if [ -z "$remote_dir" ]; then
+    echo "Directory must not be empty." >&2
+    exit 2
+fi
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+file_list=$(mktemp)
+trap 'rm -f "$file_list"' EXIT
+trap 'exit 1' HUP INT TERM
+git -C "$project_dir" ls-files -z > "$file_list"
+
+backup_dir="../spirob-sync-backups/pull-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# The Pi checkout may be missing files that exist in the local Git index.
+case "$remote_dir" in
+    *:*) set -- --rsync-path='rsync --ignore-missing-args' ;;
+    *) set -- ;;
+esac
+
+rsync -aci "$@" --backup --backup-dir="$backup_dir" --from0 --files-from="$file_list" ${dry_run:+"$dry_run"} -- "${remote_dir%/}/" "$project_dir/"

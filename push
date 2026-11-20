@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+dry_run=
+if [ "${1-}" = "--dry-run" ]; then
+    dry_run=-n
+    shift
+fi
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [--dry-run] [destination-directory]" >&2
+    exit 2
+fi
+
+remote_dir=${1-spirob:~/spirob_py_code}
+if [ -z "$remote_dir" ]; then
+    echo "Directory must not be empty." >&2
+    exit 2
+fi
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+file_list=$(mktemp)
+trap 'rm -f "$file_list"' EXIT
+trap 'exit 1' HUP INT TERM
+git -C "$project_dir" ls-files -z > "$file_list"
+
+backup_dir="../spirob-sync-backups/push-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+rsync -aci --backup --backup-dir="$backup_dir" --from0 --files-from="$file_list" ${dry_run:+"$dry_run"} -- "$project_dir/" "${remote_dir%/}/"
