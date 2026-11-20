@@ -15,6 +15,7 @@ def nonnegative(value):
 def report_performance(channel):
     times = channel.log_times
     print(f"\nPID performance for {channel.name} (Kp={channel.kp:g}, Ki={channel.ki:g}, Kd={channel.kd:g})")
+    print(f"  Tightening STEP pulses: {channel.tightening_steps}")
     if not times:
         print("No force samples recorded.")
         return
@@ -50,17 +51,32 @@ def main():
     parser.add_argument("--kd", type=nonnegative, default=0.0)
     parser.add_argument("--seconds", type=nonnegative, default=3.0,
                         help="Trial duration in seconds (default: %(default)g).")
+    parser.add_argument("--deadband-g", type=nonnegative,
+                        help="Force error needed to restart motion (defaults to shared PID setting).")
+    parser.add_argument("--max-tension-kg", type=nonnegative,
+                        help="Stop the trial at this measured tension.")
+    parser.add_argument("--max-tightening-steps", type=int,
+                        help="Stop the trial after this many tightening STEP pulses.")
     args = parser.parse_args()
     if args.seconds <= 0:
         parser.error("--seconds must be greater than zero")
 
-    from PID_multi import CHANNEL_CONFIGS, main as run_pid
+    if args.max_tension_kg is not None and args.max_tension_kg <= args.target_kg:
+        parser.error("--max-tension-kg must exceed --target-kg")
+    if args.max_tightening_steps is not None and args.max_tightening_steps <= 0:
+        parser.error("--max-tightening-steps must be greater than zero")
+
+    from PID_multi import CHANNEL_CONFIGS, FORCE_DEADBAND_G, main as run_pid
 
     kp = CHANNEL_CONFIGS[args.motor]["kp"] if args.kp is None else args.kp
 
     channels = run_pid(
         args.motor,
-        tuning=dict(kp=kp, ki=args.ki, kd=args.kd, setpoint_schedule=[args.target_kg]),
+        tuning=dict(
+            kp=kp, ki=args.ki, kd=args.kd, setpoint_schedule=[args.target_kg],
+            deadband_g=FORCE_DEADBAND_G if args.deadband_g is None else args.deadband_g,
+            max_tension_kg=args.max_tension_kg, max_tightening_steps=args.max_tightening_steps,
+        ),
         duration_s=args.seconds,
     )
     report_performance(channels[0])

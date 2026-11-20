@@ -48,6 +48,7 @@ motors = Motors(
 MAX_STEPS_PER_SEC = motors.max_rpm / 60 * motors.steps_per_rev
 
 MIN_ACTIVE_STEPS_PER_SEC = 0.3
+FORCE_DEADBAND_G = 3.0
 
 # shortcut: driver timing is unverified, check the installed driver's DIR spec before motor testing.
 DIR_GUARD_S = 10e-6
@@ -76,10 +77,15 @@ def fetch_loads(stream, channels):
         raise RuntimeError(f"HX711 streamer {MONITOR_ADDRESS}: {error}") from error
 
 
+class TrialLimitReached(Exception):
+    pass
+
+
 class MotorChannel:
     """Force PID state, pulse thread, and setpoint schedule for one motor."""
 
-    def __init__(self, name, motor_index, kp, ki, kd, setpoint_schedule, setpoint_interval_s):
+    def __init__(self, name, motor_index, kp, ki, kd, setpoint_schedule, setpoint_interval_s,
+                 *, deadband_g=FORCE_DEADBAND_G, max_tension_kg=None, max_tightening_steps=None):
         self.name = name
         self.motor_index = motor_index
         self.kp = kp
@@ -87,6 +93,10 @@ class MotorChannel:
         self.kd = kd
         self.setpoint_schedule = setpoint_schedule
         self.setpoint_interval_s = setpoint_interval_s
+        self.deadband_kg = deadband_g / 1000
+        self.max_tension_kg = max_tension_kg
+        self.max_tightening_steps = max_tightening_steps
+        self.tightening_steps = 0
 
         # --- pulse-thread state -- this is what keeps this motor's pulse
         # timing independent of the other motor's ---
@@ -98,6 +108,7 @@ class MotorChannel:
         # --- PID state ---
         self._integral = 0.0
         self._prev_error = 0.0
+        self._active_direction = 0
 
         # --- setpoint schedule state ---
         self.setpoint_index = 0
@@ -148,9 +159,14 @@ class MotorChannel:
                 continue
             motors.set_motor_speed(index, abs(speed) / MAX_STEPS_PER_SEC)
             last_step = time.monotonic()
-            motors.update(index, wait=False)
+            edge = motors.update(index, wait=False)
             time.sleep(motors.pulse_width)
             motors.update(index, wait=False)
+            if forward and edge == 1:
+                self.tightening_steps += 1
+                if self.tightening_steps == self.max_tightening_steps:
+                    self._stop_pulse.set()
+                    return
 
             time.sleep(motors.pulse_width)
 
@@ -164,13 +180,21 @@ class MotorChannel:
 
     def _pid_step(self, measured, dt):
         measured = max(0.0, measured)
-        if measured == 0.0:
-            if self.current_setpoint == 0.0:
-                self._integral = self._prev_error = 0.0
-                return 0.0
-            # A slack cable cannot release any more tension.
-            self._integral = max(0.0, self._integral)
         error = self.current_setpoint - measured
+
+        # Stop closer to target than the threshold for restarting.
+        if self._active_direction and self._active_direction * error <= self.deadband_kg / 2:
+            self._active_direction = 0
+            self._integral = 0.0
+            return 0.0
+        if not self._active_direction:
+            if abs(error) <= self.deadband_kg:
+                return 0.0
+            self._active_direction = 1 if error > 0 else -1
+            self._prev_error = error
+
+        if measured == 0.0:
+            self._integral = max(0.0, self._integral)
 
         self._integral += error * dt
         derivative = (error - self._prev_error) / dt if dt > 0 else 0.0
@@ -187,9 +211,17 @@ class MotorChannel:
             self._integral -= error * dt
             output = -MAX_STEPS_PER_SEC
 
-        return max(0.0, output) if measured == 0.0 else output  # signed steps/sec
+        # Integral and derivative transients must not reverse an active correction.
+        return output if output * self._active_direction > 0 else 0.0
 
     def step(self, now, dt, start_time, measured_force, deadline):
+        if self.max_tension_kg is not None and measured_force >= self.max_tension_kg:
+            self._stop_pulse.set()
+            self._speed_changed.set()
+            raise TrialLimitReached(f"{self.name} reached {measured_force:g} kg "
+                                    f"(tension limit {self.max_tension_kg:g} kg)")
+        if self.tightening_steps == self.max_tightening_steps:
+            raise TrialLimitReached(f"{self.name} reached {self.tightening_steps} tightening steps")
         self._maybe_advance_setpoint(now, start_time)
         output = self._pid_step(measured_force, dt)
         speed = output if abs(output) >= MIN_ACTIVE_STEPS_PER_SEC else 0.0
@@ -381,6 +413,8 @@ def main(motor=None, *, tuning=None, duration_s=None):
                     ))
                     last_print_time = now
 
+    except TrialLimitReached as error:
+        print(f"\nTrial stopped: {error}")
     except KeyboardInterrupt:
         print("\nInterrupted, stopping.")
     finally:
