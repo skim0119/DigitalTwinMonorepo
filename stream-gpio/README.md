@@ -31,13 +31,12 @@ the existing per-motor offsets and counts-per-kg factors in `stream.cpp`
 to each five-conversion average. Stop other HX711 readers before starting the
 streamer. The dashboard works with the PID stopped.
 
-For force control, run `python3 Spirob_Code/example/PID_multi.py --motor 0`
-from the Pi repo root after starting the streamer. The PID
-fetches the latest measurements over local UDP, separately from the
-WebSocket refresh. It waits up to five seconds for fresh readings on
-all selected channels before starting and stops on a failed fetch or a
-reading at least one second old. For a custom port, set
-`SPIROB_MONITOR_PORT=5051` to match `./stream-gpio -p 5051`.
+For force control, install [control_core](../control_core/README.md) and run
+`python3 debug/PID_multi.py --motor 0` from the repo root.
+The launcher uses root `pins.json` by default. Pass `--config trial-pins.json`
+to try a different configuration. The native controller fetches fresh
+conversions over local UDP and stops on stale data. For a custom port,
+set `SPIROB_MONITOR_PORT=5051` to match `./stream-gpio -p 5051`.
 
 The WebSocket `hx711` array is indexed by motor (0–5). Each entry contains
 `raw` and `kg`, or is `null` when no reading is available or the last one

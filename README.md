@@ -6,12 +6,13 @@ Tools for controlling the Spirob arm and monitoring its Raspberry Pi.
 | --- | --- |
 | [`Spirob_Code/`](Spirob_Code/README.md) | Python arm control, including motor drivers, force PID, and experiment scripts. |
 | [`debug/`](debug/) | Standalone hardware debugging scripts, including Xbox jogging. |
+| [`control_core/`](control_core/README.md) | Installable C++ motor control library used by the experiment API. |
 | [`stream-gpio/`](stream-gpio/README.md) | C++ service on the Pi that streams GPIO levels and can read HX711 load cells for monitoring and force control. |
 | [`stream-gpio-monitor/`](stream-gpio-monitor/README.md) | Rust monitor that connects to the Pi over SSH and serves a browser dashboard. |
 | [`push`](push) and [`pull`](pull) | Sync tracked files with the Pi. Both support `--dry-run`. |
 
-In the force-control setup, the Pi service reads the HX711s, Python PID control
-fetches readings over local UDP, and the monitor displays telemetry from the
+The Pi service reads the HX711s. Live experiments use native PID and motor
+workers through `control_core`. The monitor displays telemetry from the
 WebSocket stream.
 
 ## Debug tools
@@ -44,6 +45,10 @@ options override them for one trial.
 
 With the Pi's HX711 streamer running, use
 `python3 debug/PID_tune_motor.py --help` to see the trial options.
+
+PID Multi and the tuner write one folder per run under root `output/`. Each
+folder has a UTC timestamp, per-motor CSV logs, a force plot, and `run.json`
+with the effective PID settings and trial limits.
 
 Try a simulated 25-pulse jog before using hardware:
 

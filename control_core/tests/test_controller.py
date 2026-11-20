@@ -12,6 +12,7 @@ class NativeControllerTest(unittest.TestCase):
     def setUp(self):
         self.force = 0.05
         self.publish = True
+        self.motor_only = None
         self.streaming = threading.Event()
         self.streaming.set()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -43,7 +44,9 @@ class NativeControllerTest(unittest.TestCase):
                 now = time.clock_gettime_ns(clock)
                 if self.publish and now - stamp >= 10_000_000:
                     stamp = now
-                self.socket.sendto(f"{stamp} {self.force}\n".encode() * 6, sender)
+                lines = [f"{stamp} {self.force}\n" if self.motor_only in (None, i) else "0 0\n"
+                         for i in range(6)]
+                self.socket.sendto("".join(lines).encode(), sender)
 
     def wait_for(self, predicate):
         deadline = time.monotonic() + 2
@@ -76,6 +79,22 @@ class NativeControllerTest(unittest.TestCase):
 
         self.wait_for(refresh_until_stale)
         self.wait_for(lambda: all(speed == 0 for _, _, speed in self.controller.status()))
+
+    def test_single_motor_ignores_other_sensors_and_stops_at_tightening_limit(self):
+        self.controller.stop()
+        self.motor_only = 2
+        self.controller = open_controller(
+            Path(__file__).resolve().parents[2] / "pins.json",
+            [(-10, 10)] * 6, port=self.socket.getsockname()[1],
+            max_force=1, max_rate=150, simulate=True, motor=2, max_tightening_steps=2,
+        )
+        self.addCleanup(self.controller.stop)
+        self.wait_for(self.controller.ready)
+        self.controller.command([0.2] * 6, True, 0.2)
+        self.wait_for(lambda: self.controller.tightening_steps(2) == 2)
+        self.assertEqual([step for _, step, _ in self.controller.status()], [0, 0, 2, 0, 0, 0])
+        with self.assertRaisesRegex(RuntimeError, "Tightening STEP limit"):
+            self.controller.command([0.2] * 6, True, 0.2)
 
     def test_over_tension_uses_unfiltered_conversion(self):
         self.controller.command([0.2] * 6, True, 0.2)

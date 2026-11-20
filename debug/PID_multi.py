@@ -1,0 +1,199 @@
+"""Run load-cell force control with native C++ PID workers."""
+
+import argparse
+import csv
+import json
+import math
+import os
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import mkdtemp
+
+
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "pins.json"
+OUTPUT_DIR = DEFAULT_CONFIG.parent / "output"
+TELEMETRY_INTERVAL = 0.065
+MAX_STEP_RATE = 2133
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--motor", type=int, choices=range(6),
+                        help="Run only this motor and its HX711 (default: all motors).")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Use an alternate pins.json-format file.")
+    return parser.parse_args()
+
+
+@dataclass
+class ChannelLog:
+    name: str
+    kp: float
+    ki: float
+    kd: float
+    current_setpoint: float
+    tightening_steps: int = 0
+    log_times: list = field(default_factory=list)
+    log_measured: list = field(default_factory=list)
+    log_setpoints: list = field(default_factory=list)
+    log_outputs: list = field(default_factory=list)
+
+
+LOG_CSV_TEMPLATE = "pid_force_log_{name}.csv"
+COMBINED_PLOT_PNG = "pid_force_plot_all_motors.png"
+
+CHANNEL_COLORS = ["#3B6FA0", "#D9534F", "#5CB85C", "#F0AD4E", "#9B59B6", "#1ABC9C"]
+
+
+def save_log_csv(channel, csv_path):
+    """Writes one channel's run to its own CSV file."""
+    if not channel.log_times:
+        print(f"[{channel.name}] No data logged -- skipping CSV.")
+        return
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["elapsed_s", "measured_force_kg", "setpoint_kg", "output_steps_per_s"])
+        writer.writerows(zip(channel.log_times, channel.log_measured,
+                              channel.log_setpoints, channel.log_outputs))
+    print(f"[{channel.name}] Saved run log to {csv_path}")
+
+
+def save_combined_plot(channels, plot_path):
+    """One figure with every channel's measured force + setpoint overlaid,
+    instead of a separate PNG per motor. Works for any number of channels
+    given in channels."""
+    channels_with_data = [ch for ch in channels if ch.log_times]
+    if not channels_with_data:
+        print("No data logged for any channel -- skipping combined plot.")
+        return
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+    for i, ch in enumerate(channels_with_data):
+        color = CHANNEL_COLORS[i % len(CHANNEL_COLORS)]
+        ax.plot(ch.log_times, ch.log_measured, color=color, linewidth=1.5,
+                label=f"{ch.name} force")
+        ax.plot(ch.log_times, ch.log_setpoints, color=color, linestyle="--",
+                linewidth=1.2, alpha=0.6, label=f"{ch.name} setpoint")
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Force (kg)")
+    ax.set_ylim(-0.5,3)
+    ax.set_title("PID force control: measured vs. setpoint")
+    ax.legend(loc="best", frameon=False, ncol=2, fontsize=8)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(plot_path)
+    plt.close(fig)
+    print(f"Saved plot to {plot_path}")
+
+
+def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
+    from control_core import open_controller
+
+    if motor is not None and motor not in range(6):
+        raise ValueError("Motor must be between 0 and 5")
+    if tuning is not None and motor is None:
+        raise ValueError("A tuning trial requires a single motor")
+    if duration_s is not None and (not math.isfinite(duration_s) or duration_s <= 0):
+        raise ValueError("Trial duration must be positive and finite")
+
+    settings = json.loads(Path(config).read_text())
+    overrides = tuning or {}
+    selected = tuple(range(6)) if motor is None else (motor,)
+    target, = overrides.get("setpoint_schedule", [0.1])
+    tension_limit = overrides.get("max_tension_kg")
+    tightening_limit = overrides.get("max_tightening_steps")
+    if tension_limit is not None and not math.isfinite(tension_limit):
+        raise ValueError("Tension limit must be finite")
+    if not math.isfinite(target) or target < 0 or (tension_limit is not None and target >= tension_limit):
+        raise ValueError("Target must be finite, nonnegative, and below the tension limit")
+    if overrides.get("deadband_g") is not None:
+        settings["pid_deadband_g"] = overrides["deadband_g"]
+    channels = []
+    for index in selected:
+        gains = settings["motors"][index]["pid"]
+        gains.update({key: overrides[key] for key in ("kp", "ki", "kd") if key in overrides})
+        channels.append(ChannelLog(f"motor{index}", *(gains[key] for key in ("kp", "ki", "kd")), target))
+
+    settings.setdefault("pid_filter_alpha", 0.4)
+    timestamp = datetime.now(timezone.utc)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(mkdtemp(prefix=timestamp.strftime("%Y%m%dT%H%M%S.%fZ-"), dir=OUTPUT_DIR))
+    metadata = {
+        "started_at_utc": timestamp.isoformat(),
+        "config_file": str(Path(config).resolve()),
+        "motors": selected,
+        "target_kg": target,
+        "duration_s": duration_s,
+        "max_tension_kg": tension_limit,
+        "max_tightening_steps": tightening_limit,
+        "max_step_rate": MAX_STEP_RATE,
+        "settings": settings,
+    }
+    (run_dir / "run.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
+    print(f"Run output: {run_dir}")
+
+    controller = open_controller(
+        settings, [(-sys.maxsize, sys.maxsize)] * 6,
+        port=int(os.getenv("SPIROB_MONITOR_PORT", "5050")),
+        max_force=sys.float_info.max if tension_limit is None else tension_limit,
+        max_rate=MAX_STEP_RATE, motor=motor,
+        max_tightening_steps=0 if tightening_limit is None else tightening_limit,
+    )
+    targets = [target if index in selected else 0.0 for index in range(6)]
+    try:
+        startup_deadline = time.monotonic() + 5.0
+        while not controller.ready():
+            if time.monotonic() >= startup_deadline:
+                raise RuntimeError("No fresh HX711 readings. Start the updated GPIO streamer.")
+            time.sleep(0.02)
+
+        start = time.monotonic()
+        end = math.inf if duration_s is None else start + duration_s
+        last_print = start
+        while (now := time.monotonic()) < end:
+            controller.command(targets, True, min(end - now, 2 * TELEMETRY_INTERVAL))
+            status = controller.status()
+            for index, channel in zip(selected, channels):
+                force, _, speed = status[index]
+                channel.log_times.append(now - start)
+                channel.log_measured.append(force)
+                channel.log_setpoints.append(target)
+                channel.log_outputs.append(speed)
+            if now - last_print >= 0.2:
+                print("  |  ".join(
+                    f"{channel.name}: force={channel.log_measured[-1]:.3f}kg "
+                    f"setpoint={target:g}kg output={channel.log_outputs[-1]:.1f} steps/s"
+                    for channel in channels
+                ))
+                last_print = now
+            time.sleep(min(TELEMETRY_INTERVAL, max(0, end - time.monotonic())))
+    except KeyboardInterrupt:
+        print("\nInterrupted, stopping.")
+    except RuntimeError as error:
+        if str(error) not in {"Measured tension reached the configured limit", "Tightening STEP limit reached"}:
+            raise
+        print(f"\nTrial stopped: {error}")
+    finally:
+        controller.stop()
+        for index, channel in zip(selected, channels):
+            channel.tightening_steps = controller.tightening_steps(index)
+            save_log_csv(channel, run_dir / LOG_CSV_TEMPLATE.format(name=channel.name))
+        plot_name = COMBINED_PLOT_PNG if motor is None else f"pid_force_plot_motor{motor}.png"
+        save_combined_plot(channels, run_dir / plot_name)
+    return channels
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(args.motor, config=args.config)

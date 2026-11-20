@@ -34,7 +34,7 @@ DIRECTION_MODIFIER_BUTTON = 4  # LB: held = backward, released = forward
 CONTINUOUS_BUTTON = 5  # RB: confirm with print_button_indices()
 RT_THRESHOLD = 16000  # SDL trigger range is 0 to 32767.
 RAMP_TIME_S = 0.4  # Time from stopped to full jog speed (30 RPM).
-DIR_GUARD_S = 10e-6  # Match the provisional guard used in PID_multi.py.
+DIR_GUARD_S = 10e-6  # Match the provisional guard used by control_core.
 
 
 def make_motors():

@@ -2,7 +2,6 @@
 
 import argparse
 import math
-import sys
 from pathlib import Path
 from statistics import fmean
 
@@ -47,6 +46,8 @@ def report_performance(channel):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--motor", type=int, choices=range(6), required=True)
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "pins.json",
+                        help="Use an alternate pins.json-format file.")
     parser.add_argument("--target-kg", type=nonnegative, required=True)
     for gain in ("kp", "ki", "kd"):
         parser.add_argument(f"--{gain}", type=nonnegative,
@@ -68,8 +69,7 @@ def main():
     if args.max_tightening_steps is not None and args.max_tightening_steps <= 0:
         parser.error("--max-tightening-steps must be greater than zero")
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Spirob_Code/example"))
-    from PID_multi import FORCE_DEADBAND_G, main as run_pid
+    from PID_multi import main as run_pid
 
     gains = {gain: value for gain in ("kp", "ki", "kd") if (value := getattr(args, gain)) is not None}
 
@@ -77,10 +77,11 @@ def main():
         args.motor,
         tuning=dict(
             **gains, setpoint_schedule=[args.target_kg],
-            deadband_g=FORCE_DEADBAND_G if args.deadband_g is None else args.deadband_g,
+            deadband_g=args.deadband_g,
             max_tension_kg=args.max_tension_kg, max_tightening_steps=args.max_tightening_steps,
         ),
         duration_s=args.seconds,
+        config=args.config,
     )
     report_performance(channels[0])
 

@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 *.txt
+!/control_core/CMakeLists.txt
 *.save
 
 # C extensions
@@ -233,3 +234,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local experiment results
+/output/
