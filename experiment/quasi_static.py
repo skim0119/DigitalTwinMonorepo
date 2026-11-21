@@ -9,7 +9,7 @@ TENDONS = tuple(f"tendon_{index + 1}" for index in range(6))
 PRETENSION_KGF = 0.1
 
 
-def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2):
+def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2, pretension_kgf=PRETENSION_KGF):
     """Step between active-tendon force waypoints in kgf and repeat the cycle."""
     step_size = Fraction(str(step_kgf))
     phases = []
@@ -40,7 +40,7 @@ def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2):
     writer = csv.writer(stream)
     writer.writerow(("time_s", *TENDONS))
     for tick, level in enumerate(levels * cycles + [levels[-1]]):
-        values = [PRETENSION_KGF] * len(TENDONS)
+        values = [pretension_kgf] * len(TENDONS)
         for tendon, force in zip(tendons, level):
             values[tendon] = force
         writer.writerow((tick * dwell, *values))

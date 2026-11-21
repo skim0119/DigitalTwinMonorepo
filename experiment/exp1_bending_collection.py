@@ -14,9 +14,9 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 if __package__:
-    from .quasi_static import TENDONS, force_staircase
+    from .quasi_static import PRETENSION_KGF, TENDONS, force_staircase
 else:
-    from quasi_static import TENDONS, force_staircase
+    from quasi_static import PRETENSION_KGF, TENDONS, force_staircase
 
 BODIES = ("arm_base", "arm_tip")
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,8 +26,11 @@ FIELDS = ("cycle", "elapsed_s", "ros_stamp_ns", "frame", "body",
           "tendon", "target_kgf", "load_kgf", "run_status", "simulated")
 
 
-def make_table(tendon, force, cycles, steps, dwell, *, step_kgf=0.2):
-    return force_staircase((tendon,), ((0,), (force,), (0,)), cycles, steps, dwell, step_kgf=step_kgf)
+def make_table(tendon, force, cycles, steps, dwell, *, step_kgf=0.2, single_mode=False):
+    return force_staircase(
+        (tendon,), ((0,), (force,), (0,)), cycles, steps, dwell,
+        step_kgf=step_kgf, pretension_kgf=0 if single_mode else PRETENSION_KGF,
+    )
 
 
 def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
@@ -84,6 +87,7 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
                 port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
                 max_force=args.max_tension_kg, max_rate=2133,
                 max_tightening_steps=args.max_tightening_steps,
+                motor=args.tendon if args.single_mode else None,
             )
             self.wait_ready(cancel)
 
@@ -106,7 +110,10 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
                            for body in bodies):
                         break
                 time.sleep(0.05)
-            run, = experiment.submit(table, raw, "Exp 1 bending collection", 1, bodies)
+            label = "Exp 1 bending collection"
+            if args.single_mode:
+                label += " (single mode)"
+            run, = experiment.submit(table, raw, label, 1, bodies)
             print(f"Recording run {run['id']}", flush=True)
             while experiment.worker.is_alive():
                 time.sleep(0.1)
@@ -139,6 +146,8 @@ def main(*, pair=False):
     parser = argparse.ArgumentParser(description=f"Collect quasi-static SpiRob bending data for Exp {number}.")
     if not pair:
         parser.add_argument("-N", "--tendon", type=int, choices=range(6), default=0)
+        parser.add_argument("--single-mode", action="store_true",
+                            help="apply force PID only to the selected tendon")
     parser.add_argument("-F", "--force-kgf", type=float, default=2.5)
     parser.add_argument("-C", "--cycles", type=int, choices=range(1, 31), default=1)
     increments = parser.add_mutually_exclusive_group()
@@ -174,7 +183,7 @@ def main(*, pair=False):
         else:
             raw, cycle_duration = make_table(
                 args.tendon, args.force_kgf, args.cycles, args.steps, args.dwell_s,
-                step_kgf=args.step_kgf,
+                step_kgf=args.step_kgf, single_mode=args.single_mode,
             )
             tendons = (TENDONS[args.tendon],)
     except ValueError as error:
@@ -182,7 +191,8 @@ def main(*, pair=False):
 
     folder = ROOT / "output" / "experiment"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f'exp{number}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
+    name = "exp1_single_mode" if not pair and args.single_mode else f"exp{number}"
+    path = folder / f'{name}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
     if not pair:
         return collect_local(raw, path, tendons, cycle_duration, args.cycles, args)
 

@@ -24,6 +24,11 @@ number of increments per phase. Set the
 hold long enough for the measured load and pose to settle. The export records
 the entire response through each hold.
 
+Add `--single-mode` to run force PID only on the motor selected by `-N`.
+The controller leaves the other five motors inactive and applies no
+pretension to them. Single-mode recordings use the name
+`exp1_single_mode_<current_time>.csv`.
+
 Set the two limit variables to the verified limits for your setup. The tension
 limit must exceed every commanded force. The collector uses the PID and GPIO
 settings in `pins.json` by default; use `--config` for another settings file.
