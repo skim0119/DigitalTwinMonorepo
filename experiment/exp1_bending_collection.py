@@ -1,4 +1,4 @@
-"""Collect repeated quasi-static single-tendon force staircases via Experiment API."""
+"""Collect repeated quasi-static single-tendon force staircases on Spirob."""
 
 import argparse
 import csv
@@ -18,6 +18,7 @@ else:
     from quasi_static import TENDONS, force_staircase
 
 BODIES = ("arm_base", "arm_tip")
+ROOT = Path(__file__).resolve().parents[1]
 ACTIVE = {"queued", "running", "stopping"}
 FIELDS = ("cycle", "elapsed_s", "ros_stamp_ns", "frame", "body",
           "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw",
@@ -57,6 +58,66 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles):
     return all((index, body) in recorded for index in range(cycles) for body in BODIES)
 
 
+def collect_local(raw, path, tendons, cycle_duration, cycles, calibration_path):
+    import fcntl
+
+    sys.path.insert(0, str(ROOT / "experiment-api"))
+    from experiment_api.hardware import Calibration, Hardware
+    from experiment_api.runner import Experiments
+    from experiment_api.table import parse_table
+
+    try:
+        calibration = Calibration.load(json.loads(calibration_path.read_text()))
+        table = parse_table(raw, "force", "kgf")
+        calibration.validate(table)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(f"Invalid collection setup: {error}") from error
+
+    with (Path.home() / ".spirob-experiment-hardware.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("The Experiment API or another collector owns the hardware.") from None
+        experiment = Experiments(path.with_suffix(""), Hardware(calibration))
+        stopped = False
+        run = None
+        try:
+            experiment.start_mocap()
+            deadline = time.monotonic() + 3
+            while not experiment.mocap_error and time.monotonic() < deadline:
+                with experiment.lock:
+                    if all(time.monotonic() - experiment.last_body_pose.get(body, -math.inf) <= 1
+                           for body in BODIES):
+                        break
+                time.sleep(0.05)
+            run, = experiment.submit(table, raw, "Exp 1 bending collection", 1, BODIES)
+            print(f"Recording run {run['id']}", flush=True)
+            while experiment.worker.is_alive():
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            stopped = True
+        finally:
+            experiment.close()
+
+    if run is None:
+        return 130
+    run = experiment.get(run["id"])
+    folder = experiment.root / run["id"]
+
+    def read_rows(name):
+        source = folder / name
+        if source.is_file():
+            with source.open(newline="") as stream:
+                rows = csv.reader(stream)
+                next(rows, None)
+                for elapsed, *values in rows:
+                    yield (float(elapsed), *values)
+
+    complete = export(path, run, read_rows("poses.csv"), read_rows("controls.csv"),
+                      tendons, cycle_duration, cycles)
+    return report_result(path, run, complete, stopped)
+
+
 def main(*, pair=False):
     number = 2 if pair else 1
     parser = argparse.ArgumentParser(description=f"Collect quasi-static SpiRob bending data for Exp {number}.")
@@ -71,9 +132,11 @@ def main(*, pair=False):
                             help="use this many equal increments per phase")
     parser.add_argument("--dwell-s", type=float, default=1.0,
                         help="seconds to hold each setpoint (default: 1)")
-    parser.add_argument("--api-url", default="http://127.0.0.1:5052")
-    parser.add_argument("--reference-ready", action="store_true",
-                        help="confirm calibrated mechanical zero and preload for hardware")
+    if pair:
+        parser.add_argument("--api-url", default="http://127.0.0.1:5052")
+    else:
+        parser.add_argument("--calibration", type=Path,
+                            default=Path.home() / ".config/spirob/calibration.json")
     args = parser.parse_args()
     if not all(math.isfinite(value) and value > 0 for value in (
         args.force_kgf, args.step_kgf, args.dwell_s
@@ -95,6 +158,12 @@ def main(*, pair=False):
     except ValueError as error:
         parser.error(str(error))
 
+    folder = ROOT / "output" / "experiment"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f'exp{number}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
+    if not pair:
+        return collect_local(raw, path, tendons, cycle_duration, args.cycles, args.calibration)
+
     def request(route, data=None):
         try:
             request = Request(args.api_url.rstrip("/") + route, data=data)
@@ -106,14 +175,9 @@ def main(*, pair=False):
     health = request("/health")
     if not health.get("required_body_supported"):
         parser.error("Update and restart Experiment API before collecting bending data.")
-    if not health["simulated"] and not args.reference_ready:
-        parser.error("Confirm the calibrated mechanical zero and preload with --reference-ready.")
     params = urlencode(dict(mode="force", unit="kgf", label=f"Exp {number} bending collection",
-                            reference_ready=str(args.reference_ready).lower(),
+                            reference_ready="true",
                             required_body=BODIES), doseq=True)
-    folder = Path(__file__).resolve().parents[1] / "output" / "experiment"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f'exp{number}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
     run, = request("/runs?" + params, raw)
     run_id = run["id"]
     print(f"Recording run {run_id}", flush=True)
@@ -140,6 +204,10 @@ def main(*, pair=False):
     poses = request(f"/runs/{run_id}/samples?kind=poses")
     controls = request(f"/runs/{run_id}/samples?kind=controls")
     complete = export(path, run, poses, controls, tendons, cycle_duration, args.cycles)
+    return report_result(path, run, complete, stopped)
+
+
+def report_result(path, run, complete, stopped):
     print(path)
     if stopped:
         return 130

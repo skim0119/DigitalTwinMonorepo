@@ -5,7 +5,7 @@ the verified hardware calibration, GPIO streamer, and live ROS 2 `/poses`
 containing `arm_base` and `arm_tip`. From the repository root on the board:
 
 ```sh
-python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3 --reference-ready
+python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3
 ```
 
 `-N` is zero-based, so tendon 0 is `tendon_1` in Motion Board. `-F` sets the
@@ -25,7 +25,8 @@ peak. It checks for recent poses from both bodies and stops recording if either
 stream goes stale. The cycles share one calibrated reference. The selected
 tendon returns to a zero force setpoint between cycles. A zero force setpoint does not establish a
 mechanical zero. To use a simulator or an SSH tunnel from another machine, pass
-`--api-url http://127.0.0.1:PORT`. For simulation, omit `--reference-ready`.
+`--api-url http://127.0.0.1:PORT`. On hardware, the experiment assumes you
+have established the calibrated mechanical reference before launch.
 
 The script writes `output/experiment/exp1_<current_time>.csv` on the machine
 running the script. Each row contains one raw pose with its ROS timestamp,
@@ -41,7 +42,7 @@ trajectories, a timeline, and the selected tendon's force traces.
 ## Exp 2 two-tendon bending collection
 
 ```sh
-python3 experiment/exp2_bending_collection.py -F 2.5 -C 3 --reference-ready
+python3 experiment/exp2_bending_collection.py -F 2.5 -C 3
 ```
 
 Exp 2 starts T0 and T1 at zero force and follows this cycle:
