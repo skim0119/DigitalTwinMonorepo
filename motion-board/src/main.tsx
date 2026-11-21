@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { active, average, defaultReview, exportCsv, reviewed, sampleDeletions } from './review';
 import type { Action, Control, Point, Pose, Review, Run, Table } from './review';
+import { readBendingCsv } from './bending';
 import { Trajectory } from './trajectory';
 import type { Trace } from './trajectory';
 import './style.css';
@@ -30,7 +31,9 @@ function download(name: string, contents: string) {
 }
 
 function App() {
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [liveRuns, setRuns] = useState<Run[]>([]);
+  const [importedRuns, setImportedRuns] = useState<Run[]>([]);
+  const runs = [...importedRuns, ...liveRuns];
   const [selected, setSelected] = useState<string[]>([]);
   const [focus, setFocus] = useState('');
   const [poses, setPoses] = useState<Record<string, Pose[]>>({});
@@ -108,7 +111,7 @@ function App() {
     return () => { stopped = true; clearTimeout(timer); socket.close(); };
   }, []);
 
-  const archiveKey = runs.filter(run => selected.includes(run.id) && !active(run)).map(run => run.id).join(',');
+  const archiveKey = liveRuns.filter(run => selected.includes(run.id) && !active(run)).map(run => run.id).join(',');
   useEffect(() => {
     if (!archiveKey || !online) return;
     let dead = false;
@@ -127,7 +130,8 @@ function App() {
   }, [archiveKey, online]);
 
   const current = runs.find(run => run.id === focus);
-  const busy = runs.find(run => run.status === 'running' || run.status === 'stopping') ?? runs.find(active);
+  const imported = importedRuns.some(run => run.id === focus);
+  const busy = liveRuns.find(run => run.status === 'running' || run.status === 'stopping') ?? liveRuns.find(active);
   const focusPoses = poses[focus] ?? emptyPoses;
   const focusControls = controls[focus] ?? emptyControls;
   const duration = Math.max(.01, current?.table.duration ?? 1);
@@ -168,7 +172,7 @@ function App() {
   const cursorPose = body ? focusPoses.reduce<Pose | undefined>((closest, candidate) =>
     candidate[3] === body && (!closest || Math.abs(candidate[0] - time) < Math.abs(closest[0] - time)) ? candidate : closest,
   undefined) : undefined;
-  const canReview = !!current && !active(current);
+  const canReview = !!current && !imported && !active(current);
   const canPick = canReview && selected.includes(focus) && !rawView && focusPoses.length > 0;
   const lastDeletion = [...review.intervals].reverse().find(mark => mark.group)?.group;
   const marks = review.intervals.filter(mark => !body || mark.body === body);
@@ -178,6 +182,21 @@ function App() {
     setFocus(run.id); setCursor(0); setFollow(true); setStart(undefined); setEnd(undefined);
     setSelected(ids => ids.includes(run.id) ? ids : [...ids, run.id]);
   }
+  async function importBending(file: File) {
+    try {
+      const batch = crypto.randomUUID().replaceAll('-', '');
+      const records = readBendingCsv(await file.text(), file.name, batch, new Date(file.lastModified).toISOString());
+      setImportedRuns(previous => [...records.map(record => record.run), ...previous]);
+      setPoses(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.poses])) }));
+      setControls(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.controls])) }));
+      choose(records[0].run);
+      setSelected(records.map(record => record.run.id));
+      setBody('');
+      setTendon(records[0].controls[0]?.[1] ?? 'tendon_1');
+      setError('');
+    } catch (error) { report(error); }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError(''); setPending(true);
@@ -238,6 +257,11 @@ function App() {
     {error && <p className="error" role="alert">{error}</p>}
     <div className="workspace">
       <aside><h2>Runs <small>{runs.length}</small></h2>
+        <label className="file">Import bending CSV<input type="file" accept=".csv,text/csv" onChange={e => {
+          const file = e.currentTarget.files?.[0];
+          e.currentTarget.value = '';
+          if (file) void importBending(file);
+        }} /></label>
         {runs.length === 0 && <p>{online ? 'Upload an actuation table to record your first trial.' : 'Waiting for Experiment API.'}</p>}
         {[...new Set(runs.map(run => run.batch))].map(batch => {
           const children = runs.filter(run => run.batch === batch).sort((a, b) => a.trial - b.trial);
@@ -301,7 +325,7 @@ function App() {
           }
         }}>
           <div className="workhead"><div><h2>{current ? `${current.label} · Trial ${current.trial}` : 'Pose trajectory'}</h2>
-            <p>{current?.error ?? (current ? `${current.status} · ${current.table.duration} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
+            <p>{current?.error ?? (current ? `${current.status} · ${seconds(current.table.duration)} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
             {busy && <button className="stop" onClick={() => { void api(`/runs/${busy.id}/stop`, { method: 'POST' }).then(refresh).catch(report); }}>Stop batch</button>}
           </div>
           <div className="tools">
@@ -366,7 +390,7 @@ function App() {
               <span>{mark.body} · {seconds(mark.start)}–{seconds(mark.end)} s · {mark.action}</span>
               <button disabled={pending} onClick={() => void saveReview({ ...review, intervals: review.intervals.filter((_, index) => index !== i) })}>Undo</button></div>)}
           </section>}
-          {current && <div className="downloads">
+          {current && !imported && <div className="downloads">
             <a href={urlFor(focus, 'actuation.csv')}>Actuation CSV</a>
             {focusPoses.length > 0 && <a href={urlFor(focus, 'poses.csv')}>Raw poses CSV</a>}
             {focusControls.length > 0 && <a href={urlFor(focus, 'controls.csv')}>Controls CSV</a>}

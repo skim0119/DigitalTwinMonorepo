@@ -64,6 +64,7 @@ class Experiments:
         self.mocap_ready = threading.Event()
         self.poses = None
         self.last_pose = 0
+        self.last_body_pose = {}
         self.mocap_error = None
         self.worker = None
         self.mocap_thread = None
@@ -95,6 +96,7 @@ class Experiments:
     def on_pose(self, now, stamp, frame, name, values):
         with self.lock:
             self.last_pose = now
+            self.last_body_pose[name] = now
             if self.poses is not None:
                 try:
                     self.poses.put_nowait((now, str(stamp), frame, name, *values))
@@ -116,7 +118,7 @@ class Experiments:
             write_json(self.root / run["id"] / "run.json", updated)
             run.update(updated)
 
-    def submit(self, table, raw, label, repeats):
+    def submit(self, table, raw, label, repeats, required_bodies=()):
         with self.lock:
             if self.worker and self.worker.is_alive():
                 raise BusyError("A batch is already active.")
@@ -136,7 +138,7 @@ class Experiments:
                 self.mark(run, "queued")
                 self.runs[run_id] = run
                 runs.append(run)
-            self.worker = threading.Thread(target=self.play, args=(table, runs), name="trial-runner")
+            self.worker = threading.Thread(target=self.play, args=(table, runs, required_bodies), name="trial-runner")
             self.worker.start()
             return [run.copy() for run in runs]
 
@@ -155,13 +157,13 @@ class Experiments:
             self.sequence += 1
             self.preview.append((self.sequence, run_id, kind, data))
 
-    def play(self, table, runs):
+    def play(self, table, runs, required_bodies):
         for run in runs:
             if self.cancel.is_set():
                 self.mark(run, "cancelled")
                 continue
             try:
-                self.record(table, run)
+                self.record(table, run, required_bodies)
             except Exception as error:
                 self.cancel.set()
                 self.mark(run, "failed", str(error))
@@ -170,9 +172,17 @@ class Experiments:
                 if run is not runs[-1]:
                     self.cancel.wait(self.repeat_pause)
 
-    def record(self, table, run):
+    def check_required_bodies(self, names, now):
+        with self.lock:
+            missing = [name for name in names if now - self.last_body_pose.get(name, -math.inf) > 1]
+        if missing:
+            raise RuntimeError("No recent mocap pose for " + ", ".join(missing) + ".")
+
+    def record(self, table, run, required_bodies):
         if not self.simulated and (self.mocap_error or time.monotonic() - self.last_pose > 1):
             raise RuntimeError(self.mocap_error or "No recent OptiTrack poses. Check the ROS bridge.")
+        if not self.simulated:
+            self.check_required_bodies(required_bodies, time.monotonic())
         folder = self.root / run["id"]
         with (folder / "poses.csv").open("w", newline="", buffering=1) as pose_file, \
                 (folder / "controls.csv").open("w", newline="", buffering=1) as control_file:
@@ -207,6 +217,8 @@ class Experiments:
                     if self.pose_overrun or (not self.simulated and
                             (self.mocap_error or now - self.last_pose > 1)):
                         raise RuntimeError("Pose recording was interrupted or fell behind.")
+                    if required_bodies and not self.simulated:
+                        self.check_required_bodies(required_bodies, now)
                     values = table.at(now - start)
                     outputs = self.hardware.update(table, values, now, max(now - previous, 0.001), end)
                     if outputs is None:
@@ -217,9 +229,13 @@ class Experiments:
                     self.emit_preview(run["id"], "controls", rows)
                     if self.simulated:
                         x = self.hardware.position * 0.008
-                        self.on_pose(now, time.time_ns(), "world", "Rigid Body 001",
-                                     (x, x * math.sin(now - start), 0.14 + abs(x) * 0.5,
-                                      0, 0, math.sin(x), math.cos(x)))
+                        stamp = time.time_ns()
+                        tip = (x, x * math.sin(now - start), 0.14 + abs(x) * 0.5,
+                               0, 0, math.sin(x), math.cos(x))
+                        self.on_pose(now, stamp, "world", "Rigid Body 001", tip)
+                        if required_bodies:
+                            self.on_pose(now, stamp, "world", "arm_tip", tip)
+                            self.on_pose(now, stamp, "world", "arm_base", (0, 0, 0.3, 0, 0, 0, 1))
                     self.drain(queue, start, end, pose_csv, latest)
                     if latest:
                         self.emit_preview(run["id"], "poses", list(latest.values()))

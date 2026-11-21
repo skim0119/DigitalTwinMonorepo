@@ -23,6 +23,10 @@ file_list=$(mktemp)
 trap 'rm -f "$file_list"' EXIT
 trap 'exit 1' HUP INT TERM
 git -C "$project_dir" ls-files -z > "$file_list"
+# Include deployment sources before their first commit.
+git -C "$project_dir" ls-files --others --exclude-standard -z -- \
+    deploy/ experiment/ experiment-api/experiment_api/video_recorder.py \
+    motion-board/src/bending.ts >> "$file_list"
 
 backup_dir="../spirob-sync-backups/push-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 rsync -aci --backup --backup-dir="$backup_dir" --from0 --files-from="$file_list" ${dry_run:+"$dry_run"} -- "$project_dir/" "${remote_dir%/}/"

@@ -116,6 +116,23 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(Experiments(folder).get(first)["status"], "complete")
             self.assertTrue((Path(folder) / first / "review.json").exists())
 
+    def test_required_body_missing_prevents_hardware_open(self):
+        calibration = Calibration.load(dict(steps_per_mm=[2] * 6, travel_mm=[[0, 20]] * 6,
+                                            max_force_kgf=1, max_step_rate=100))
+        opened = []
+        hardware = Hardware(calibration, open_controller=lambda *args, **kwargs: opened.append(True))
+        with tempfile.TemporaryDirectory() as folder:
+            experiment = Experiments(folder, hardware)
+            experiment.on_pose(time.monotonic(), time.time_ns(), "world", "arm_base",
+                               (0, 0, 0, 0, 0, 0, 1))
+            table = parse_table(EXAMPLE, "force", "N")
+            run, = experiment.submit(table, EXAMPLE, "Bending", 1, ("arm_base", "arm_tip"))
+            experiment.worker.join(timeout=2)
+            result = experiment.get(run["id"])
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("arm_tip", result["error"])
+            self.assertEqual(opened, [])
+
     def test_optional_webcam_download_on_completion_and_stop(self):
         def webcam(directory, *, filename):
             return lambda: (directory / filename).write_bytes(b"mock MP4")

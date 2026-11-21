@@ -38,3 +38,7 @@ The default SSH tunnel binds locally on port 15052.
    also keeps the original data on Spirob.
 
 Run `npm test` for review and averaging tests.
+
+Use **Import bending CSV** in the Runs sidebar to open an
+[Exp 1 bending recording](../experiment/README.md) from disk. Each cycle appears
+as a trial with pose trajectories and the recorded tendon force traces.
