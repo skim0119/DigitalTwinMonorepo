@@ -21,8 +21,11 @@ MAX_STEP_RATE = 2133
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--motor", type=int, choices=range(6),
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--motor", type=int, choices=range(6),
                         help="Run only this motor and its HX711 (default: all motors).")
+    selection.add_argument("--skip-motor", type=int, choices=range(6),
+                           help="Run all other motors and ignore this motor’s HX711.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Use an alternate pins.json-format file.")
     return parser.parse_args()
@@ -34,11 +37,11 @@ class ChannelLog:
     kp: float
     ki: float
     kd: float
-    current_setpoint: float
     tightening_steps: int = 0
     log_times: list = field(default_factory=list)
     log_measured: list = field(default_factory=list)
     log_setpoints: list = field(default_factory=list)
+    log_terms: list = field(default_factory=list)
     log_outputs: list = field(default_factory=list)
 
 
@@ -56,16 +59,17 @@ def save_log_csv(channel, csv_path):
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["elapsed_s", "measured_force_kg", "setpoint_kg", "output_steps_per_s"])
-        writer.writerows(zip(channel.log_times, channel.log_measured,
-                              channel.log_setpoints, channel.log_outputs))
+        writer.writerow(["elapsed_s", "measured_force_kg", "setpoint_kg", "output_steps_per_s",
+                         "p_steps_per_s", "i_steps_per_s", "d_steps_per_s", "ff_steps_per_s",
+                         "requested_steps_per_s", "filtered_steps_per_s"])
+        for t, force, target, output, terms in zip(channel.log_times, channel.log_measured,
+                                                  channel.log_setpoints, channel.log_outputs, channel.log_terms):
+            writer.writerow([t, force, target, output, *terms])
     print(f"[{channel.name}] Saved run log to {csv_path}")
 
 
 def save_combined_plot(channels, plot_path):
-    """One figure with every channel's measured force + setpoint overlaid,
-    instead of a separate PNG per motor. Works for any number of channels
-    given in channels."""
+    """Plot force tracking and commanded step rates on a shared time axis."""
     channels_with_data = [ch for ch in channels if ch.log_times]
     if not channels_with_data:
         print("No data logged for any channel -- skipping combined plot.")
@@ -75,33 +79,39 @@ def save_combined_plot(channels, plot_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+    fig, (ax, output_ax) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), dpi=150)
     for i, ch in enumerate(channels_with_data):
         color = CHANNEL_COLORS[i % len(CHANNEL_COLORS)]
         ax.plot(ch.log_times, ch.log_measured, color=color, linewidth=1.5,
                 label=f"{ch.name} force")
         ax.plot(ch.log_times, ch.log_setpoints, color=color, linestyle="--",
                 linewidth=1.2, alpha=0.6, label=f"{ch.name} setpoint")
+        output_ax.plot(ch.log_times, ch.log_outputs, color=color, linewidth=1.2,
+                       label=ch.name)
 
-    ax.set_xlabel("Time (s)")
+    output_ax.set_xlabel("Time (s)")
+    output_ax.set_ylabel("Output (steps/s)")
+    output_ax.set_title("Commanded motor step rate")
     ax.set_ylabel("Force (kg)")
-    ax.set_ylim(-0.5,3)
     ax.set_title("PID force control: measured vs. setpoint")
-    ax.legend(loc="best", frameon=False, ncol=2, fontsize=8)
-    ax.grid(True, linestyle="--", alpha=0.4)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
+    for axis in (ax, output_ax):
+        axis.legend(loc="best", frameon=False, ncol=2, fontsize=8)
+        axis.grid(True, linestyle="--", alpha=0.4)
+        for spine in ("top", "right"):
+            axis.spines[spine].set_visible(False)
     plt.tight_layout()
     plt.savefig(plot_path)
     plt.close(fig)
     print(f"Saved plot to {plot_path}")
 
 
-def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
+def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
     from control_core import open_controller
 
     if motor is not None and motor not in range(6):
         raise ValueError("Motor must be between 0 and 5")
+    if skip_motor is not None and (skip_motor not in range(6) or motor is not None):
+        raise ValueError("Skip motor must be between 0 and 5 and used without a single motor")
     if tuning is not None and motor is None:
         raise ValueError("A tuning trial requires a single motor")
     if duration_s is not None and (not math.isfinite(duration_s) or duration_s <= 0):
@@ -109,13 +119,18 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
 
     settings = json.loads(Path(config).read_text())
     overrides = tuning or {}
-    selected = tuple(range(6)) if motor is None else (motor,)
-    target, = overrides.get("setpoint_schedule", [0.1])
+    selected = tuple(index for index in range(6) if index != skip_motor) if motor is None else (motor,)
+    schedule = tuple(overrides.get("setpoint_schedule", [0.1]))
+    if not schedule or (len(schedule) > 1 and duration_s is None):
+        raise ValueError("A multi-target schedule requires a finite trial duration")
+    target = schedule[0]
+    hold_s = math.inf if duration_s is None else duration_s / len(schedule)
     tension_limit = overrides.get("max_tension_kg")
     tightening_limit = overrides.get("max_tightening_steps")
     if tension_limit is not None and not math.isfinite(tension_limit):
         raise ValueError("Tension limit must be finite")
-    if not math.isfinite(target) or target < 0 or (tension_limit is not None and target >= tension_limit):
+    if any(not math.isfinite(value) or value < 0 or
+           (tension_limit is not None and value >= tension_limit) for value in schedule):
         raise ValueError("Target must be finite, nonnegative, and below the tension limit")
     if overrides.get("deadband_g") is not None:
         settings["pid_deadband_g"] = overrides["deadband_g"]
@@ -123,7 +138,7 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
     for index in selected:
         gains = settings["motors"][index]["pid"]
         gains.update({key: overrides[key] for key in ("kp", "ki", "kd") if key in overrides})
-        channels.append(ChannelLog(f"motor{index}", *(gains[key] for key in ("kp", "ki", "kd")), target))
+        channels.append(ChannelLog(f"motor{index}", *(gains[key] for key in ("kp", "ki", "kd"))))
 
     settings.setdefault("pid_filter_alpha", 0.4)
     timestamp = datetime.now(timezone.utc)
@@ -134,6 +149,7 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
         "config_file": str(Path(config).resolve()),
         "motors": selected,
         "target_kg": target,
+        "setpoint_schedule_kg": schedule,
         "duration_s": duration_s,
         "max_tension_kg": tension_limit,
         "max_tightening_steps": tightening_limit,
@@ -147,7 +163,7 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
         settings, [(-sys.maxsize, sys.maxsize)] * 6,
         port=int(os.getenv("SPIROB_MONITOR_PORT", "5050")),
         max_force=sys.float_info.max if tension_limit is None else tension_limit,
-        max_rate=MAX_STEP_RATE, motor=motor,
+        max_rate=MAX_STEP_RATE, motor=motor, skip_motor=skip_motor,
         max_tightening_steps=0 if tightening_limit is None else tightening_limit,
     )
     targets = [target if index in selected else 0.0 for index in range(6)]
@@ -162,11 +178,17 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
         end = math.inf if duration_s is None else start + duration_s
         last_print = start
         while (now := time.monotonic()) < end:
+            elapsed = now - start
+            target = schedule[min(int(elapsed / hold_s), len(schedule) - 1)]
+            if target != targets[selected[0]]:
+                for index in selected:
+                    targets[index] = target
             controller.command(targets, True, min(end - now, 2 * TELEMETRY_INTERVAL))
-            status = controller.status()
+            status = controller.pid_status()
             for index, channel in zip(selected, channels):
-                force, _, speed = status[index]
-                channel.log_times.append(now - start)
+                force, speed, *terms = status[index]
+                channel.log_terms.append(terms)
+                channel.log_times.append(elapsed)
                 channel.log_measured.append(force)
                 channel.log_setpoints.append(target)
                 channel.log_outputs.append(speed)
@@ -196,4 +218,4 @@ def main(motor=None, *, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.motor, config=args.config)
+    main(args.motor, skip_motor=args.skip_motor, config=args.config)

@@ -107,13 +107,37 @@ python -m unittest experiment_api.test_experiment -v
 
 Install OpenCV on the Pi (for example, the system `python3-opencv` package,
 available inside the system-site-packages environment) and connect a webcam.
-At the start of each hardware trial, Experiment API uses the repository webcam
+At the start of each hardware trial, Experiment API starts its bundled webcam
 recorder in the background. The default device is camera 0. Use
 `--camera-index 1` for a different device or `--no-webcam` to disable recording.
-When launching outside the repository root, set `SPIROB_REPO_ROOT` to the checkout.
 
 Completed video is saved as `webcam.mp4` in the trial directory. The recorder
 also finalizes any frames captured before a stop. Motion Board exposes the file
 as **Webcam video (MP4)**. A missing webcam, OpenCV, or usable frames leaves the
 trial's other recordings available. Camera startup can delay the first frame
 relative to actuation. The MP4 is not frame-synchronized with the CSV.
+
+## Start automatically on Pi boot
+
+The systemd units in `deploy/` start the GPIO streamer, the headless ROS 2
+`/poses` publisher, and Experiment API at power-on. They assume the checkout
+is at `~/spirob_py_code`, the ROS workspace is at `~/ros2_spirob_ws`, and
+the API is installed in `~/spirob_py_code/.experiment-venv` as above.
+Build the streamer with `make -C stream-gpio` and place the verified calibration
+at `~/.config/spirob/calibration.json`. Stop any manually started streamer,
+mocap publisher, or Experiment API before bringing up the units.
+
+From the repository root on the Pi, install and enable the units once.
+
+```sh
+sudo install -m 0644 deploy/spirob-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now "spirob-experiment@$USER.service"
+systemctl status "spirob-experiment@$USER" "spirob-gpio@$USER" "spirob-mocap@$USER"
+```
+
+The mocap server must be reachable on the apparatus network and streaming
+rigid-body poses. The API still requires fresh feedback and the operator's
+mechanical-reference confirmation before an experiment. Motion Board's
+`npm start -- --ssh spirob` opens its own tunnel to the Pi. This requires
+network reachability and SSH authentication from the operator's computer.

@@ -140,9 +140,7 @@ class LiveTuner:
         if self.controller is None:
             return
         try:
-            if not self.controller.ready():
-                if self.running:
-                    self.stop(reason="Motion stopped. HX711 readings are stale.")
+            if not self.running and not self.controller.ready():
                 return
             if self.running:
                 targets = [0.0] * 6

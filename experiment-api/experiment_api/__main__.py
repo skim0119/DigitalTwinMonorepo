@@ -2,9 +2,6 @@
 import argparse
 import fcntl
 import json
-import logging
-import os
-import runpy
 from functools import partial
 from pathlib import Path
 
@@ -13,6 +10,7 @@ import uvicorn
 from .api import create_app
 from .hardware import Calibration, Hardware
 from .runner import Experiments
+from .video_recorder import start_recording
 
 
 def main():
@@ -33,12 +31,7 @@ def main():
         parser.error(f"Invalid calibration: {error}")
     webcam = None
     if hardware and not args.no_webcam:
-        root = Path(os.environ.get("SPIROB_REPO_ROOT", Path.cwd()))
-        source = root / "Spirob_Code/core_nodes/vision/video_recorder.py"
-        if source.is_file():
-            webcam = partial(runpy.run_path(str(source))["start_recording"], camera_index=args.camera_index)
-        else:
-            logging.getLogger(__name__).warning("Webcam recorder missing at %s. Set SPIROB_REPO_ROOT.", source)
+        webcam = partial(start_recording, camera_index=args.camera_index)
     args.data.mkdir(parents=True, exist_ok=True)
     lock_path = (Path.home() / ".spirob-experiment-hardware.lock" if hardware
                  else args.data / ".experiment-api.lock")

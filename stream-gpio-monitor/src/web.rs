@@ -92,7 +92,7 @@ fn handle(
         return response(
             StatusCode::FORBIDDEN,
             text,
-            "Use the printed dashboard URL.",
+            "Use the monitor machine's IP address and dashboard port.",
         );
     }
 
@@ -198,9 +198,8 @@ pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> 
         ));
     }
     let assets = Arc::new(assets);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let host: Arc<str> = listener.local_addr()?.to_string().into();
-    let url = format!("http://{host}");
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+    let url = format!("http://127.0.0.1:{port}");
     println!("Spirob GPIO dashboard: {url}  (Ctrl+C to stop)");
     let opener = if cfg!(target_os = "macos") {
         "open"
@@ -230,7 +229,7 @@ pub async fn serve(target: String, shared: Arc<Mutex<State>>) -> io::Result<()> 
             incoming = listener.accept() => {
                 let (stream, _) = incoming?;
                 let (target, shared) = (Arc::clone(&target), Arc::clone(&shared));
-                let host = Arc::clone(&host);
+                let host = stream.local_addr()?.to_string();
                 let assets = Arc::clone(&assets);
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()

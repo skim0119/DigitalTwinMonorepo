@@ -18,6 +18,11 @@ The Rust monitor opens the dashboard at [127.0.0.1:8080](http://127.0.0.1:8080)
 and connects to `spirob:5050` over SSH automatically. SSH must already work
 without prompts. Press Ctrl+C in the terminal to stop the monitor.
 
+From another machine on the LAN, open `http://<monitor-machine-ip>:8080`
+using the IPv4 address of the machine running `cargo run`. The dashboard
+listens on all IPv4 interfaces, and any client that can reach the port can
+view readings and adjust GPIO smoothing.
+
 After editing the dashboard, rerun `make dashboard` and restart the monitor.
 If Homebrew's Rust comes first on your PATH, run `RUSTC="$(rustup which rustc)" make dashboard`
 to build with the toolchain that has the WebAssembly target.
@@ -40,8 +45,8 @@ SPIROB_DASHBOARD_PORT=8081 cargo run -- 127.0.0.1:5051
 
 Open [the simulated dashboard](http://127.0.0.1:8081). The simulator sends
 six HX711 loads and changing motor and HX711 pin levels about 20 times a
-second. Both processes bind to IPv4 loopback. Press Ctrl+C in each terminal
-to stop them.
+second. The simulator binds to IPv4 loopback. Press Ctrl+C in each terminal
+to stop both processes.
 
 The root [pin map](../pins.json) lists the BCM GPIO connections for all six
 motors and HX711s. The simulator reads this map at build time. When changing

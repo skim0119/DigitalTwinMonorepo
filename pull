@@ -23,6 +23,8 @@ file_list=$(mktemp)
 trap 'rm -f "$file_list"' EXIT
 trap 'exit 1' HUP INT TERM
 git -C "$project_dir" ls-files -z > "$file_list"
+# Preserve local deletions in both directions, including with openrsync.
+(cd "$project_dir" && perl -0ni -e 'chomp; print "$_\0" if -e $_ || -l $_' "$file_list")
 
 backup_dir="../spirob-sync-backups/pull-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 # The Pi checkout may be missing files that exist in the local Git index.

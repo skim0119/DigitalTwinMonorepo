@@ -38,6 +38,8 @@ streamer. The dashboard works with the PID stopped.
 
 For force control, install [control_core](../control_core/README.md) and run
 `python3 debug/PID_multi.py --motor 0` from the repo root.
+To run every motor except motor 2, use `python3 debug/PID_multi.py --skip-motor 2`.
+The controller ignores that motor’s HX711 readings and leaves its STEP and DIR pins alone.
 The launcher uses root `pins.json` by default. Pass `--config trial-pins.json`
 to try a different configuration. The native controller fetches fresh
 conversions over local UDP and stops on stale data. For a custom port,

@@ -1,0 +1,12 @@
+[Unit]
+Description=Spirob ROS 2 motion capture
+Wants=network-online.target
+After=network-online.target
+PartOf=spirob-experiment@%i.service
+
+[Service]
+User=%i
+WorkingDirectory=/home/%i/ros2_spirob_ws
+ExecStart=/bin/bash -c 'source install/setup.bash && exec ros2 run motion_capture_tracking motion_capture_tracking_node --ros-args -r __node:=motion_capture_tracking --params-file "$(ros2 pkg prefix --share motion_capture_tracking)/config/cfg.yaml"'
+Restart=always
+RestartSec=3s
