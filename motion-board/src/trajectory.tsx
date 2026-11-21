@@ -26,7 +26,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
     try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
     catch { setError(true); return; }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor('#15232a');
+    renderer.setClearColor('#ffffff');
     target.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.0001, 200);
@@ -36,7 +36,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
     controls.addEventListener("start", () => { fit.current.moved = true; });
     controls.minDistance = 0.005;
     controls.maxDistance = 100;
-    const grid = new THREE.GridHelper(2, 20, '#496572', '#273d48');
+    const grid = new THREE.GridHelper(2, 20, '#98aac4', '#d5deeb');
     grid.rotation.x = Math.PI / 2;
     scene.add(grid);
     const data = new THREE.Group();
@@ -93,7 +93,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
       if (dots.length) state.data.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(dots),
         new THREE.PointsMaterial({ color: trace.color, size: 4, sizeAttenuation: false })));
       const axis = new THREE.AxesHelper(.012);
-      axis.setColors("#ff9c91", "#9fe8a6", "#a1caff");
+      axis.setColors("#ae3e34", "#277047", "#365da7");
       markers.current.push({ trace, axis });
       state.data.add(axis);
     });
@@ -102,7 +102,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
         (!fit.current.moved && extent > fit.current.extent * 1.7))) {
       const center = bounds.getCenter(new THREE.Vector3());
       state.controls.target.copy(center);
-      state.camera.position.copy(center).add(new THREE.Vector3(.9, -1.4, .9).multiplyScalar(extent));
+      state.camera.position.copy(center).add(new THREE.Vector3(.76, -1.19, .76).multiplyScalar(extent));
       state.grid.position.set(center.x, center.y, bounds.min.z - extent * .12);
       state.grid.scale.setScalar(Math.max(extent, .05) * 2);
       state.controls.update();
@@ -111,7 +111,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
     const chosen = traces.filter(trace => pick && trace.key.startsWith(pick + ':')).flatMap(trace =>
       trace.points.filter(point => !point.interpolated && selection.has(sampleKey(point.pose))).map(xyz));
     if (chosen.length) state.data.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(chosen),
-      new THREE.PointsMaterial({ color: '#ffca73', size: 7, sizeAttenuation: false, depthTest: false })));
+      new THREE.PointsMaterial({ color: '#a96303', size: 7, sizeAttenuation: false, depthTest: false })));
     if (bounds.isEmpty()) fit.current = { scope: "", extent: 0, moved: false };
   }, [traces, scope, pick, selection]);
 
@@ -140,7 +140,7 @@ export function Trajectory({ traces, cursor, scope, pick, selection, onPick }: {
     const center = box.getCenter(new THREE.Vector3());
     const scale = Math.max(box.getSize(new THREE.Vector3()).length(), .03);
     state.controls.target.copy(center);
-    state.camera.position.copy(center).add(new THREE.Vector3(.9, -1.4, .9).multiplyScalar(scale));
+    state.camera.position.copy(center).add(new THREE.Vector3(.76, -1.19, .76).multiplyScalar(scale));
     state.controls.update();
     fit.current.moved = true;
   }

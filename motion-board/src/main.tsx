@@ -8,7 +8,7 @@ import { Trajectory } from './trajectory';
 import type { Trace } from './trajectory';
 import './style.css';
 
-const palette = ['#71e1c7', '#8db9ff', '#f8a782', '#d0a1ec', '#edcf84', '#9bd88b'];
+const palette = ['#2456a6', '#087c77', '#a44726', '#7848a3', '#87590c', '#4a7332'];
 const seconds = (value: number) => value.toFixed(2);
 const urlFor = (id: string, name: string) => `/api/runs/${id}/files/${name}?download=true`;
 const emptyPoses: Pose[] = [];
@@ -163,7 +163,7 @@ function App() {
       const series = ids.map(id => reviewed(poses[id] ?? [], reviews[id]?.intervals ?? [], name)).filter(points => points.length);
       const frame = series[0]?.[0].pose[2];
       if (!frame) return [];
-      return [{ key: 'mean:' + name, color: '#fff1cf', mean: true, points: average(series, duration, frame) }];
+      return [{ key: 'mean:' + name, color: '#152441', mean: true, points: average(series, duration, frame) }];
     });
   }, [showMean, batchKey, body, bodies, poses, reviews, duration]);
   const traces = useMemo(() => [...traceData, ...mean], [traceData, mean]);
@@ -252,7 +252,7 @@ function App() {
 
   return <>
     <header className="top"><h1>Motion Board</h1>
-      <div className="top-actions"><span className={online ? 'online' : 'offline'}>{online ? simulated ? 'Simulation' : 'Pi connected' : 'Disconnected'}</span>
+      <div className="top-actions"><span role="status" className={online ? 'connection online' : 'connection offline'}>{online ? simulated ? 'Simulation' : 'Pi connected' : 'Disconnected'}</span>
       <button className="primary" onClick={() => showForm(!form)}>{form ? 'Close setup' : 'New experiment'}</button></div></header>
     {error && <p className="error" role="alert">{error}</p>}
     <div className="workspace">
@@ -284,7 +284,7 @@ function App() {
                   }
                 }} />
               <button onClick={() => choose(run)}>Trial {run.trial}</button>
-              <small>{run.status}</small>
+              <small className="run-status" data-status={run.status}>{run.status}</small>
             </div>)}
           </section>;
         })}
@@ -325,32 +325,34 @@ function App() {
           }
         }}>
           <div className="workhead"><div><h2>{current ? `${current.label} · Trial ${current.trial}` : 'Pose trajectory'}</h2>
-            <p>{current?.error ?? (current ? `${current.status} · ${seconds(current.table.duration)} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
+            <p>{current?.error ?? (current ? `${current.status[0].toUpperCase() + current.status.slice(1)} · ${seconds(current.table.duration)} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
             {busy && <button className="stop" onClick={() => { void api(`/runs/${busy.id}/stop`, { method: 'POST' }).then(refresh).catch(report); }}>Stop batch</button>}
           </div>
-          <div className="tools">
-            <label>Rigid body<select value={body} onChange={e => { setSamples(new Set()); setBody(e.target.value); }}>
-              <option value="">All bodies</option>{bodies.map(name => <option key={name}>{name}</option>)}</select></label>
-            <label className="check"><input type="checkbox" checked={showMean} onChange={e => setShowMean(e.target.checked)} /> Mean of included repeats</label>
-            <label className="check"><input type="checkbox" checked={rawView} onChange={e => { setPicking(false); setSamples(new Set()); setRawView(e.target.checked); }} /> Show raw poses</label>
+          <div className="viewport-toolbar">
+            <div className="tools">
+              <label>Rigid body<select value={body} onChange={e => { setSamples(new Set()); setBody(e.target.value); }}>
+                <option value="">All bodies</option>{bodies.map(name => <option key={name}>{name}</option>)}</select></label>
+              <label className="check"><input type="checkbox" checked={showMean} onChange={e => setShowMean(e.target.checked)} /> Mean of included repeats</label>
+              <label className="check"><input type="checkbox" checked={rawView} onChange={e => { setPicking(false); setSamples(new Set()); setRawView(e.target.checked); }} /> Show raw poses</label>
+            </div>
+            {canReview && <div className="tools sample-tools">
+              <button aria-pressed={picking && canPick} disabled={!canPick} onClick={() => {
+                setPicking(!picking); setSamples(new Set());
+              }}>{picking && canPick ? 'Done selecting' : 'Select samples'}</button>
+              {picking && canPick && <>
+                <span aria-live="polite">{samples.size ? `${samples.size} selected` : 'Drag a box over the focused trial'}</span>
+                <button disabled={!samples.size || pending} onClick={() => void deleteSamples()}>Delete selected</button>
+                <button disabled={!samples.size} onClick={() => setSamples(new Set())}>Clear selection</button>
+              </>}
+              {lastDeletion && <button disabled={pending} onClick={() => undoDeletion(lastDeletion)}>Undo last deletion</button>}
+            </div>}
           </div>
-          {canReview && <div className="tools sample-tools">
-            <button aria-pressed={picking && canPick} disabled={!canPick} onClick={() => {
-              setPicking(!picking); setSamples(new Set());
-            }}>{picking && canPick ? 'Done selecting' : 'Select samples'}</button>
-            {picking && canPick && <>
-              <span aria-live="polite">{samples.size ? `${samples.size} selected` : 'Drag a box over the focused trial'}</span>
-              <button disabled={!samples.size || pending} onClick={() => void deleteSamples()}>Delete selected</button>
-              <button disabled={!samples.size} onClick={() => setSamples(new Set())}>Clear selection</button>
-            </>}
-            {lastDeletion && <button disabled={pending} onClick={() => undoDeletion(lastDeletion)}>Undo last deletion</button>}
-          </div>}
           <Trajectory traces={traces} cursor={time} scope={selected.join(",") + ":" + body}
             pick={picking && canPick ? focus : ''} selection={samples}
             onPick={keys => setSamples(previous => new Set([...previous, ...keys]))} />
           <div className="keys">{traceData.map(trace => <span key={trace.key}><i style={{ background: trace.color }} />
             Trial {runs.find(run => trace.key.startsWith(run.id + ':'))?.trial} · {trace.key.slice(33)}</span>)}
-            {mean.length > 0 && <span><i style={{ background: '#fff1cf' }} />Mean</span>}</div>
+            {mean.length > 0 && <span><i style={{ background: '#152441' }} />Mean</span>}</div>
           <div className="timeline">
             <div className="timeline-head"><label htmlFor="time">Timeline</label><output>{seconds(time)} / {seconds(timelineDuration)} s</output>
               {current && active(current) && <label className="check"><input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> Follow live</label>}</div>
@@ -365,7 +367,7 @@ function App() {
               `${p.pose[3]} · ${p.count} contributing trials · ${((p.spread ?? 0) * 1000).toFixed(2)} mm RMS spread`).join(' | ')}</p>}
             {current && <><label>Tendon<select value={tendon} onChange={e => setTendon(e.target.value)}>
               {Array.from({ length: 6 }, (_, i) => <option key={i} value={`tendon_${i + 1}`}>Tendon {i + 1}</option>)}</select></label>
-              <ControlPlot rows={focusControls} tendon={tendon} time={time} duration={timelineDuration} /></>}
+              <ControlPlot recording={active(current)} rows={focusControls} tendon={tendon} time={time} duration={timelineDuration} /></>}
           </div>
           {canReview && <section className="review"><h3>Review intervals</h3>
             <label className="check"><input type="checkbox" checked={review.include} disabled={pending}
@@ -390,9 +392,10 @@ function App() {
               <span>{mark.body} · {seconds(mark.start)}–{seconds(mark.end)} s · {mark.action}</span>
               <button disabled={pending} onClick={() => void saveReview({ ...review, intervals: review.intervals.filter((_, index) => index !== i) })}>Undo</button></div>)}
           </section>}
-          {current && !imported && <div className="downloads">
+          {current && !imported && <section className="downloads" aria-label="Run files">
+            <h3>Run files</h3>
             <a href={urlFor(focus, 'actuation.csv')}>Actuation CSV</a>
-            {focusPoses.length > 0 && <a href={urlFor(focus, 'poses.csv')}>Raw poses CSV</a>}
+            {focusPoses.length > 0 && <a className="pose-download" href={urlFor(focus, 'poses.csv')}>Raw poses CSV</a>}
             {focusControls.length > 0 && <a href={urlFor(focus, 'controls.csv')}>Controls CSV</a>}
             {current.has_video && <a href={urlFor(focus, 'webcam.mp4')}>Webcam video (MP4)</a>}
             <a href={urlFor(focus, 'run.json')}>Trial metadata</a>
@@ -401,7 +404,7 @@ function App() {
             {canReview && focusPoses.length > 0 && <button onClick={() => download(`${focus}_reviewed.csv`,
               exportCsv([...new Set(focusPoses.map(p => p[3]))].flatMap(name => reviewed(focusPoses, review.intervals, name)), 'reviewed'))}>Reviewed CSV</button>}
             {meanPoints.length > 0 && <button onClick={() => download(`${current.batch}_mean.csv`, exportCsv(meanPoints, 'mean'))}>Mean CSV</button>}
-          </div>}
+          </section>}
         </section>
       </main>
     </div>
@@ -414,9 +417,9 @@ function append<T>(current: Record<string, T[]>, incoming: Record<string, T[]>) 
   return next;
 }
 
-function ControlPlot({ rows, tendon, time, duration }: { rows: Control[]; tendon: string; time: number; duration: number }) {
+function ControlPlot({ recording, rows, tendon, time, duration }: { recording: boolean; rows: Control[]; tendon: string; time: number; duration: number }) {
   const data = rows.filter(row => row[1] === tendon);
-  if (!data.length) return <p>Awaiting control and load data.</p>;
+  if (!data.length) return <p className="control-empty">{recording ? 'Waiting for control and load samples.' : 'No control or load samples in this trial.'}</p>;
   const makeLine = (index: 2 | 4) => {
     let low = 0, high = 0;
     for (const row of data) { low = Math.min(low, row[index]); high = Math.max(high, row[index]); }
