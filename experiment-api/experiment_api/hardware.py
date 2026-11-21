@@ -62,6 +62,9 @@ class Hardware:
         self.controller = None
         self.reference_valid = True
 
+    def validate(self, table):
+        self.calibration.validate(table)
+
     def open(self, _table, cancel):
         if not self.reference_valid:
             raise RuntimeError("Re-establish the mechanical zero and restart Experiment API before another trial.")
@@ -79,6 +82,9 @@ class Hardware:
             port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
             max_force=config.max_force_kgf, max_rate=config.max_step_rate,
         )
+        self.wait_ready(cancel)
+
+    def wait_ready(self, cancel):
         deadline = time.monotonic() + 3
         while not cancel.is_set() and not self.controller.ready():
             if time.monotonic() >= deadline:

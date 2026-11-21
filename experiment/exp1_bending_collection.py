@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import sys
 import time
 from datetime import datetime
@@ -34,7 +35,7 @@ def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
     return force_staircase((0, 1), waypoints, cycles, steps, dwell, step_kgf=step_kgf)
 
 
-def export(path, run, poses, controls, tendons, cycle_duration, cycles):
+def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=BODIES):
     loads = iter(row for row in controls if row[1] in tendons)
     upcoming = next(loads, None)
     latest = {}
@@ -44,7 +45,7 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles):
         writer = csv.writer(stream)
         writer.writerow(FIELDS)
         for elapsed, stamp, frame, body, *pose in poses:
-            if body not in BODIES:
+            if body not in bodies:
                 continue
             cycle = min(int(elapsed / cycle_duration), cycles - 1)
             while upcoming is not None and upcoming[0] <= elapsed:
@@ -55,30 +56,45 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles):
                 writer.writerow((cycle + 1, elapsed - cycle * cycle_duration, stamp, frame,
                                  body, *pose, tendon, target, load, run["status"], run["simulated"]))
             recorded.add((cycle, body))
-    return all((index, body) in recorded for index in range(cycles) for body in BODIES)
+    return all((index, body) in recorded for index in range(cycles) for body in bodies)
 
 
-def collect_local(raw, path, tendons, cycle_duration, cycles, calibration_path):
+def collect_local(raw, path, tendons, cycle_duration, cycles, args):
     import fcntl
 
     sys.path.insert(0, str(ROOT / "experiment-api"))
-    from experiment_api.hardware import Calibration, Hardware
+    from control_core import open_controller
+    from experiment_api.hardware import Hardware
     from experiment_api.runner import Experiments
     from experiment_api.table import parse_table
 
-    try:
-        calibration = Calibration.load(json.loads(calibration_path.read_text()))
-        table = parse_table(raw, "force", "kgf")
-        calibration.validate(table)
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(f"Invalid collection setup: {error}") from error
+    table = parse_table(raw, "force", "kgf")
+    bodies = tuple(dict.fromkeys(args.name or BODIES))
+
+    class ForcePID(Hardware):
+        def validate(self, table):
+            if table.mode != "force" or table.unit != "kgf":
+                raise ValueError("Exp 1 requires force commands in kgf.")
+            if max(map(max, table.values)) >= args.max_tension_kg:
+                raise ValueError("Every commanded force must be below --max-tension-kg.")
+
+        def open(self, _table, cancel):
+            self.controller = open_controller(
+                args.config, [(-sys.maxsize, sys.maxsize)] * len(TENDONS),
+                port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
+                max_force=args.max_tension_kg, max_rate=2133,
+                max_tightening_steps=args.max_tightening_steps,
+            )
+            self.wait_ready(cancel)
 
     with (Path.home() / ".spirob-experiment-hardware.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("The Experiment API or another collector owns the hardware.") from None
-        experiment = Experiments(path.with_suffix(""), Hardware(calibration))
+        hardware = ForcePID(None)
+        hardware.validate(table)
+        experiment = Experiments(path.with_suffix(""), hardware)
         stopped = False
         run = None
         try:
@@ -87,10 +103,10 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, calibration_path):
             while not experiment.mocap_error and time.monotonic() < deadline:
                 with experiment.lock:
                     if all(time.monotonic() - experiment.last_body_pose.get(body, -math.inf) <= 1
-                           for body in BODIES):
+                           for body in bodies):
                         break
                 time.sleep(0.05)
-            run, = experiment.submit(table, raw, "Exp 1 bending collection", 1, BODIES)
+            run, = experiment.submit(table, raw, "Exp 1 bending collection", 1, bodies)
             print(f"Recording run {run['id']}", flush=True)
             while experiment.worker.is_alive():
                 time.sleep(0.1)
@@ -114,7 +130,7 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, calibration_path):
                     yield (float(elapsed), *values)
 
     complete = export(path, run, read_rows("poses.csv"), read_rows("controls.csv"),
-                      tendons, cycle_duration, cycles)
+                      tendons, cycle_duration, cycles, bodies)
     return report_result(path, run, complete, stopped)
 
 
@@ -135,9 +151,15 @@ def main(*, pair=False):
     if pair:
         parser.add_argument("--api-url", default="http://127.0.0.1:5052")
     else:
-        parser.add_argument("--calibration", type=Path,
-                            default=Path.home() / ".config/spirob/calibration.json")
+        parser.add_argument("--config", type=Path,
+                            default=Path(os.environ.get("SPIROB_PINS_CONFIG", ROOT / "pins.json")))
+        parser.add_argument("--max-tension-kg", type=float, required=True)
+        parser.add_argument("--max-tightening-steps", type=int, required=True)
+        parser.add_argument("--name", action="append", help="ROS rigid body to record (repeatable)")
     args = parser.parse_args()
+    if not pair and not (math.isfinite(args.max_tension_kg) and args.max_tension_kg > 0
+                         and 0 < args.max_tightening_steps <= sys.maxsize):
+        parser.error("Use a finite positive tension limit and a positive tightening pulse limit.")
     if not all(math.isfinite(value) and value > 0 for value in (
         args.force_kgf, args.step_kgf, args.dwell_s
     )):
@@ -162,7 +184,7 @@ def main(*, pair=False):
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f'exp{number}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
     if not pair:
-        return collect_local(raw, path, tendons, cycle_duration, args.cycles, args.calibration)
+        return collect_local(raw, path, tendons, cycle_duration, args.cycles, args)
 
     def request(route, data=None):
         try:
@@ -212,7 +234,7 @@ def report_result(path, run, complete, stopped):
     if stopped:
         return 130
     if run["status"] != "complete" or not complete:
-        print(run.get("error") or "Recording ended without both bodies in every cycle.", file=sys.stderr)
+        print(run.get("error") or "Recording ended without every selected body in each cycle.", file=sys.stderr)
         return 1
     return 0
 
@@ -220,7 +242,7 @@ def report_result(path, run, complete, stopped):
 def run_cli(*, pair=False):
     try:
         sys.exit(main(pair=pair))
-    except (RuntimeError, OSError) as error:
+    except (RuntimeError, OSError, ValueError) as error:
         sys.exit(str(error))
 
 

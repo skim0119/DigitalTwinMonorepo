@@ -12,11 +12,11 @@
   "pid_filter_alpha": 0.4,
   "pid_max_acceleration_steps_s2": 500,
   "motors": [
-    {"motor": 0, "pul": 4, "dir": 27, "dout": 2, "sck": 3, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
-    {"motor": 1, "pul": 10, "dir": 9, "dout": 5, "sck": 6, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
-    {"motor": 2, "pul": 18, "dir": 14, "dout": 7, "sck": 11, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
-    {"motor": 3, "pul": 23, "dir": 1, "dout": 21, "sck": 13, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
-    {"motor": 4, "pul": 22, "dir": 25, "dout": 17, "sck": 20, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
-    {"motor": 5, "pul": 26, "dir": 0, "dout": 12, "sck": 19, "pid": {"kp": 550.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}}
+    {"motor": 0, "pul": 4, "dir": 27, "dout": 2, "sck": 3, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
+    {"motor": 1, "pul": 10, "dir": 9, "dout": 5, "sck": 6, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
+    {"motor": 2, "pul": 18, "dir": 14, "dout": 7, "sck": 11, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
+    {"motor": 3, "pul": 23, "dir": 1, "dout": 21, "sck": 13, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
+    {"motor": 4, "pul": 22, "dir": 25, "dout": 17, "sck": 20, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}},
+    {"motor": 5, "pul": 26, "dir": 0, "dout": 12, "sck": 19, "pid": {"kp": 350.0, "ki": 10.0, "kd": 2.0, "kff": 1.0}}
   ]
 }

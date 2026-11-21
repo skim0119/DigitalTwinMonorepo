@@ -1,11 +1,15 @@
 # Exp 1 bending collection
 
-Update and start [Experiment API](../experiment-api/README.md) on the board with
-the verified hardware calibration, GPIO streamer, and live ROS 2 `/poses`
-containing `arm_base` and `arm_tip`. From the repository root on the board:
+Run Exp 1 directly on Spirob. Use a Python environment with `control_core` and
+Matplotlib installed, and source the ROS 2 workspace if your shell has not
+already done so. Keep the GPIO streamer and mocap publisher running with
+`arm_base` and `arm_tip` on `/poses`. If the Experiment API service is running
+on Spirob, stop it separately so the collector can take the hardware lock.
+From the repository root on Spirob:
 
 ```sh
-python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3
+python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3 \
+  --max-tension-kg "$MAX_TENSION_KG" --max-tightening-steps "$MAX_TIGHTENING_STEPS"
 ```
 
 `-N` is zero-based, so tendon 0 is `tendon_1` in Motion Board. `-F` sets the
@@ -20,26 +24,30 @@ number of increments per phase. Set the
 hold long enough for the measured load and pose to settle. The export records
 the entire response through each hold.
 
-The API enforces the calibrated force limit, which must exceed the requested
-peak. It checks for recent poses from both bodies and stops recording if either
-stream goes stale. The cycles share one calibrated reference. The selected
-tendon returns to a zero force setpoint between cycles. A zero force setpoint does not establish a
-mechanical zero. To use a simulator or an SSH tunnel from another machine, pass
-`--api-url http://127.0.0.1:PORT`. On hardware, the experiment assumes you
-have established the calibrated mechanical reference before launch.
+Set the two limit variables to the verified limits for your setup. The tension
+limit must exceed every commanded force. The collector uses the PID and GPIO
+settings in `pins.json` by default; use `--config` for another settings file.
+Use `--name arm_tip` to export just the tip, or repeat `--name` to select several
+bodies. The default export includes `arm_base` and `arm_tip`. The collector
+stops if any selected body's pose stream goes stale.
 
-The script writes `output/experiment/exp1_<current_time>.csv` on the machine
-running the script. Each row contains one raw pose with its ROS timestamp,
+The script writes `output/experiment/exp1_<current_time>.csv` on Spirob.
+Each row contains one raw pose with its ROS timestamp,
 frame, cycle-relative elapsed time, and the latest available command and
 measured load for the selected tendon. The two bodies may share a ROS timestamp.
-Ctrl-C requests a batch stop and exports the samples already recorded. The
-original run files also remain in the API's recording directory.
+Ctrl-C stops the trial and exports the samples already recorded. The sibling
+`exp1_<current_time>/` directory contains the raw run files and
+`diagnostics.png`. Download the CSV or the raw run directory from Spirob when
+you are ready to review it.
 
 In Motion Board, choose **Import bending CSV** in the Runs sidebar. The file
 opens locally with one selectable trial per cycle, the base and tip
 trajectories, a timeline, and the selected tendon's force traces.
 
 ## Exp 2 two-tendon bending collection
+
+Exp 2 uses [Experiment API](../experiment-api/README.md). The default API
+address is `http://127.0.0.1:5052`. Use `--api-url` to select another address.
 
 ```sh
 python3 experiment/exp2_bending_collection.py -F 2.5 -C 3
@@ -62,6 +70,6 @@ pose and active tendon. Open it with **Import bending CSV** and use Motion
 Board's Tendon selector to switch between T0 (`tendon_1`) and T1 (`tendon_2`).
 
 Both experiments generate their force tables with
-[`force_staircase`](quasi_static.py). The Experiment API holds each table
+[`force_staircase`](quasi_static.py). The trial runner holds each table
 row until the next timestamp. The dwell is time-based, so choose it based on
 the measured settling time.

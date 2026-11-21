@@ -123,7 +123,7 @@ class Experiments:
             if self.worker and self.worker.is_alive():
                 raise BusyError("A batch is already active.")
             if not self.simulated:
-                self.hardware.calibration.validate(table)
+                self.hardware.validate(table)
             self.cancel.clear()
             batch = uuid4().hex
             sequence = sha256(json.dumps(table.response(), sort_keys=True).encode()).hexdigest()
