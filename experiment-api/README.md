@@ -96,6 +96,10 @@ applied setpoint, observed filtered load, motor step count, and step rate.
 Pose and control rows have independent timestamps. Partial recordings and
 failure reasons are preserved.
 
+After each trial with recorded samples, the runner saves `diagnostics.png` next
+to the CSVs. It shows rigid-body X, Y, and Z positions, tendon commands, and
+measured loads against elapsed time, including for partial recordings.
+
 ## Tests
 
 ```sh

@@ -166,7 +166,17 @@ class Experiments:
                 self.record(table, run, required_bodies)
             except Exception as error:
                 self.cancel.set()
-                self.mark(run, "failed", str(error))
+                failure = str(error)
+            else:
+                failure = None
+            try:
+                from .diagnostics import save_diagnostics
+
+                save_diagnostics(self.root / run["id"])
+            except Exception:
+                logger.exception("Could not export diagnostics for trial %s", run["id"])
+            if failure is not None:
+                self.mark(run, "failed", failure)
             else:
                 self.mark(run, "cancelled" if self.cancel.is_set() else "complete")
                 if run is not runs[-1]:

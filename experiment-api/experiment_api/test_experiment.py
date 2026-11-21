@@ -100,6 +100,9 @@ class ApiTest(unittest.TestCase):
                             break
                     self.assertTrue(any(frame[1] == first and frame[2] == "poses" for frame in frames))
                 self.wait_for(lambda: all(row["status"] == "complete" for row in client.get("/runs").json()))
+                for run in runs:
+                    plot = Path(folder) / run["id"] / "diagnostics.png"
+                    self.assertEqual(plot.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
                 poses = client.get(f"/runs/{first}/files/poses.csv?download=true")
                 self.assertIn("attachment", poses.headers["content-disposition"])
                 self.assertFalse(client.get("/runs").json()[0]["has_video"])
