@@ -1,4 +1,4 @@
-"""Settle SpiRob at 0.1 kgf per tendon and measure vertical alignment on /poses.
+"""Counter-bend SpiRob and verify vertical alignment at 0.1 kgf per tendon.
 
 The mocap frame must have +Z aligned with gravity-up. This standalone debug
 run stops force control on exit.
@@ -22,6 +22,65 @@ MAX_RUN_S = 10.0
 SETTLE_S = 0.5
 FORCE_TOL_KGF = 0.02
 POSE_MAX_AGE_S = 0.25
+BASELINE_S = 0.8
+PROBE_S = 0.75
+PROBE_ON_S = 0.60
+PROBE_KGF = 0.35
+CORRECTION_KGF = 0.65
+FINAL_S = 2.5
+
+
+def pull(tendon, force):
+    targets = list(TARGETS)
+    targets[tendon] = force
+    return targets
+
+
+class CounterBend:
+    def __init__(self):
+        self.start = None
+        self.probe_starts = {}
+        self.responses = {}
+        self.returning = False
+        self.selected = None
+
+    def command(self, now, deadline, xyz, xy_tol_mm):
+        if self.start is None:
+            self.start = now
+        elapsed = now - self.start
+        if elapsed < BASELINE_S:
+            return "baseline", TARGETS
+        if self.returning or deadline - now <= FINAL_S:
+            return "verify", TARGETS
+
+        probe_time = elapsed - BASELINE_S
+        tendon = int(probe_time / PROBE_S)
+        if tendon < len(TARGETS):
+            if probe_time - tendon * PROBE_S < PROBE_ON_S:
+                self.probe_starts.setdefault(tendon, xyz)
+                return "probe", pull(tendon, PROBE_KGF)
+            if tendon in self.probe_starts and tendon not in self.responses:
+                self.responses[tendon] = tuple(a - b for a, b in zip(xyz, self.probe_starts[tendon]))
+            return "release", TARGETS
+
+        x, y, _ = xyz
+        lateral = math.hypot(x, y)
+        if self.selected is not None and lateral > xy_tol_mm:
+            return "counter-bend", pull(self.selected, CORRECTION_KGF)
+        if lateral > xy_tol_mm:
+            # Select the measured response pointing most directly toward the gravity line.
+            candidates = [
+                (-(x * dx + y * dy) / lateral, -dz, index)
+                for index, response in self.responses.items()
+                for dx, dy, dz in [response]
+            ]
+            if candidates:
+                inward_mm, _, selected = max(candidates)
+                if inward_mm > 0.5:
+                    self.selected = selected
+                    return "counter-bend", pull(selected, CORRECTION_KGF)
+        self.returning = True
+        return "verify", TARGETS
 
 
 def positive_float(value):
@@ -44,7 +103,9 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
     start = deadline - MAX_RUN_S
     first = last = None
     stable = deque()
+    verification_started = None
     next_sample = start
+    sequence = CounterBend()
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
         now = time.monotonic()
@@ -61,7 +122,8 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
                 if last is not None:
                     return "sensor data lost", first, last
                 continue
-            controller.command(TARGETS, True, min(0.15, deadline - now))
+            phase, targets = sequence.command(now, deadline, pose[1], xy_tol_mm)
+            controller.command(targets, True, min(0.15, deadline - now))
             forces = tuple(channel[0] for channel in controller.pid_status())
         except RuntimeError as error:
             return f"controller fault: {error}", first, last
@@ -71,9 +133,11 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
         x, y, z = xyz
         lateral = math.hypot(x, y)
         error = max(abs(force - target) for force, target in zip(forces, TARGETS))
-        write_row((now - start, *xyz, lateral, *forces))
+        write_row((now - start, phase, *xyz, lateral, *targets, *forces))
         last = (now, lateral, z, forces)
-        if lateral > xy_tol_mm or z >= 0 or error > FORCE_TOL_KGF:
+        if phase == "verify" and verification_started is None:
+            verification_started = now
+        if phase not in ("baseline", "verify") or lateral > xy_tol_mm or z >= 0 or error > FORCE_TOL_KGF:
             stable.clear()
             continue
         if not stable or stamp > stable[-1][0]:
@@ -81,6 +145,8 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
         while len(stable) > 1 and stamp - stable[1][0] >= SETTLE_S:
             stable.popleft()
         if stamp - stable[0][0] >= SETTLE_S:
+            if phase == "verify" and now - verification_started < 1.5:
+                continue
             if all(math.dist(xyz, point) <= xy_tol_mm for _, point in stable):
                 return "homed", first, last
     return "timeout", first, last
@@ -102,8 +168,8 @@ def main():
     force_limit, rate_limit = safety_limits(settings)
     force_limit = min(force_limit, args.max_tension_kg)
     step_limit = settings.get("max_tightening_steps", 3000)
-    if force_limit <= TARGETS[0] or type(step_limit) is not int or step_limit <= 0:
-        parser.error("Force limit must exceed 0.1 kgf and tightening limit must be positive.")
+    if force_limit <= CORRECTION_KGF or type(step_limit) is not int or step_limit <= 0:
+        parser.error("Force limit must exceed 0.65 kgf and tightening limit must be positive.")
 
     pose = None
     source_stamp = None
@@ -135,7 +201,8 @@ def main():
             with path.open("w", newline="") as stream:
                 print(f"Performance CSV: {path}", flush=True)
                 writer = csv.writer(stream)
-                writer.writerow(("elapsed_s", "x_mm", "y_mm", "z_mm", "lateral_mm",
+                writer.writerow(("elapsed_s", "phase", "x_mm", "y_mm", "z_mm", "lateral_mm",
+                                 *(f"target_{i}_kgf" for i in range(1, 7)),
                                  *(f"tendon_{i}_kgf" for i in range(1, 7))))
                 deadline = time.monotonic() + MAX_RUN_S
                 controller = open_controller(
