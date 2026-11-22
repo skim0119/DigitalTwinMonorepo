@@ -1,18 +1,25 @@
 # Spirob GPIO stream
 
 On the Raspberry Pi 4 Model B, build with a C++17 compiler, make, and
-Boost.Beast headers. The process needs read and write access to `/dev/gpiomem`.
+Boost.Beast headers. The default mode needs read and write access to
+`/dev/gpiomem`. GPIO-only mode needs read access.
 
 ```sh
 make
 ./stream-gpio
 ./stream-gpio -p 5051
 ./stream-gpio --dry-run
+./stream-gpio --gpio-only
+./stream-gpio --gpio-only --dry-run
 ```
 
-With `--dry-run`, the streamer reads live GPIO and HX711 data and prints one
-JSON frame per line to stdout at about 20 Hz. It opens no TCP or UDP sockets.
-Stop any other HX711 reader before using this mode.
+With `--dry-run`, the streamer prints one JSON frame per line to stdout at
+about 20 Hz. It opens no TCP or UDP sockets.
+
+With `--gpio-only`, the streamer reads GPIO levels without configuring or
+driving any pins. Frames contain only `unix_ms` and `levels`, and the HX711
+UDP endpoint is disabled. Combine this flag with `--dry-run` to print those
+frames to stdout.
 
 The server listens on IPv4 loopback (port 5050 by default). To leave it
 running after SSH logout, start it from this directory.
@@ -32,9 +39,10 @@ register at about 20 Hz.
 Short motor and HX711 pulses may fall between snapshots.
 
 The streamer drives all six HX711 clocks, selects channel A at gain 64, and applies
-the existing per-motor offsets and counts-per-kg factors in `stream.cpp`
-to each five-conversion average. Stop other HX711 readers before starting the
-streamer. The dashboard works with the PID stopped.
+the existing per-motor offsets and counts-per-kg factors in `hx711.cpp`
+to each five-conversion average. Stop other HX711 readers before starting
+the streamer with HX711 enabled, including in dry-run mode. The dashboard
+works with the PID stopped.
 
 For force control, install [control_core](../control_core/README.md) and run
 `python3 debug/PID_multi.py --motor 0` from the repo root.
