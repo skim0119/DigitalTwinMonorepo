@@ -37,7 +37,9 @@ def pull(tendon, force):
 
 
 class CounterBend:
-    def __init__(self):
+    def __init__(self, known_tendon=None):
+        self.known_tendon = known_tendon
+        self.initial_xy = None
         self.start = None
         self.probe_starts = {}
         self.responses = {}
@@ -51,6 +53,19 @@ class CounterBend:
         if elapsed < BASELINE_S:
             return "baseline", TARGETS
         if self.returning or deadline - now <= FINAL_S:
+            return "verify", TARGETS
+
+        if self.known_tendon is not None:
+            x, y, _ = xyz
+            if self.initial_xy is None:
+                self.initial_xy = (x, y)
+            x0, y0 = self.initial_xy
+            initial_offset = math.hypot(x0, y0)
+            if (elapsed < BASELINE_S + 2.0 and initial_offset > xy_tol_mm
+                    and -2.0 * initial_offset < x * x0 + y * y0
+                    and math.hypot(x, y) <= initial_offset + 2.0):
+                return "counter-bend", pull(self.known_tendon, CORRECTION_KGF)
+            self.returning = True
             return "verify", TARGETS
 
         probe_time = elapsed - BASELINE_S
@@ -99,13 +114,13 @@ def relative_pose(msg):
     return xyz if all(math.isfinite(value) for value in xyz) else None
 
 
-def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
+def home(controller, poll_pose, write_row, xy_tol_mm, deadline, known_tendon=None):
     start = deadline - MAX_RUN_S
     first = last = None
     stable = deque()
     verification_started = None
     next_sample = start
-    sequence = CounterBend()
+    sequence = CounterBend(known_tendon)
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
         now = time.monotonic()
@@ -150,7 +165,7 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
         while len(stable) > 1 and stamp - stable[1][0] >= SETTLE_S:
             stable.popleft()
         if stamp - stable[0][0] >= SETTLE_S:
-            if phase == "verify" and now - verification_started < 1.5:
+            if phase == "verify" and now - verification_started < (4.0 if known_tendon is not None else 1.5):
                 continue
             if all(math.dist(xyz, point) <= xy_tol_mm for _, point in stable):
                 return "homed", first, last
@@ -162,7 +177,10 @@ def main():
     parser.add_argument("--config", type=Path, default=ROOT / "pins.json")
     parser.add_argument("--xy-tol-mm", type=positive_float, default=2.0)
     parser.add_argument("--max-tension-kg", type=positive_float, default=4.5)
+    parser.add_argument("--known-tendon", type=int, choices=range(1, 7),
+                        help="Use a previously measured inward tendon for a pulse of up to 2 s.")
     args = parser.parse_args()
+    known_tendon = None if args.known_tendon is None else args.known_tendon - 1
 
     import rclpy
     from control_core import open_controller, safety_limits
@@ -218,7 +236,7 @@ def main():
                 )
                 try:
                     result, first, last = home(
-                        controller, poll_pose, writer.writerow, args.xy_tol_mm, deadline,
+                        controller, poll_pose, writer.writerow, args.xy_tol_mm, deadline, known_tendon,
                     )
                 finally:
                     controller.stop()
