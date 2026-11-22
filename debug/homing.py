@@ -39,8 +39,9 @@ def pull(tendon, force):
 
 
 class CounterBend:
-    def __init__(self, known_tendon=None):
+    def __init__(self, known_tendon=None, *, angle=False):
         self.known_tendon = known_tendon
+        self.angle = angle
         self.pulse_start = None
         self.pulse_xy = None
         self.known_direction = None
@@ -93,10 +94,10 @@ class CounterBend:
         if self.pulse_start is not None:
             x0, y0 = self.pulse_xy
             initial_offset = math.hypot(x0, y0)
-            if (now - self.pulse_start < MAX_PULSE_S
+            if (now - self.pulse_start < (0.5 if self.angle else MAX_PULSE_S)
                     and -2.0 * initial_offset < x * x0 + y * y0
                     and lateral <= initial_offset + 2.0):
-                return "counter-bend", pull(self.selected, CORRECTION_KGF)
+                return "counter-bend", pull(self.selected, PROBE_KGF if self.angle else CORRECTION_KGF)
         self.returning = True
         return "verify", TARGETS
 
@@ -116,22 +117,38 @@ def positive_float(value):
     return number
 
 
-def relative_pose(msg):
+def relative_pose(msg, axis_marker=None):
     points = {body.name: body.pose.position for body in msg.poses}
     if not {"arm_base", "arm_tip"} <= points.keys():
         return None
     base, tip = points["arm_base"], points["arm_tip"]
     xyz = tuple(1000 * (getattr(tip, axis) - getattr(base, axis)) for axis in "xyz")
-    return xyz if all(math.isfinite(value) for value in xyz) else None
+    if not all(math.isfinite(value) for value in xyz):
+        return None
+    if axis_marker is None:
+        return xyz
+    if axis_marker not in points:
+        return None
+    upstream = points[axis_marker]
+    dx, dy, dz = (getattr(tip, axis) - getattr(upstream, axis) for axis in "xyz")
+    if not all(math.isfinite(value) for value in (dx, dy, dz)) or math.hypot(dx, dy, dz) < 0.001:
+        return None
+    lateral = math.hypot(dx, dy)
+    tilt = math.degrees(math.atan2(lateral, abs(dz)))
+    # Project onto the +Z hemisphere so either vertical axis gives zero tilt.
+    scale = math.copysign(tilt / lateral, dz) if lateral else 0.0
+    return (*xyz, dx * scale, dy * scale)
 
 
-def home(controller, poll_pose, write_row, xy_tol_mm, deadline, known_tendon=None):
+def home(controller, poll_pose, write_row, xy_tol_mm, deadline, known_tendon=None,
+         tilt_tol_deg=None):
     start = deadline - MAX_RUN_S
     first = last = None
     stable = deque()
     verification_started = None
     minimum_verification = 4.0 if known_tendon is not None else RETRY_SETTLE_S
     next_sample = start
+    angle_stage = False
     sequence = CounterBend(known_tendon)
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
@@ -154,29 +171,44 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline, known_tendon=Non
                     # Native PID pauses stale channels while it waits for fresh readings.
                     controller.command(TARGETS, True, min(0.15, deadline - now))
                 continue
-            phase, targets = sequence.command(now, deadline, pose[1], xy_tol_mm)
+            xyz = pose[1][:3]
+            tilt_xy = pose[1][3:]
+            feedback = (*tilt_xy, -1.0) if angle_stage else xyz
+            tolerance = tilt_tol_deg if angle_stage else xy_tol_mm
+            phase, targets = sequence.command(now, deadline, feedback, tolerance)
             controller.command(targets, True, min(0.15, deadline - now))
             forces = tuple(channel[0] for channel in controller.pid_status())
         except RuntimeError as error:
             return f"controller fault: {error}", first, last
         if not all(math.isfinite(force) for force in forces):
             return "invalid load-cell reading", first, last
-        stamp, xyz = pose
+        stamp = pose[0]
+        tilt = math.hypot(*tilt_xy) if tilt_xy else None
         x, y, z = xyz
         lateral = math.hypot(x, y)
         error = max(abs(force - target) for force, target in zip(forces, TARGETS))
-        write_row((now - start, phase, *xyz, lateral, *targets, *forces))
-        last = (now, lateral, z, forces)
+        write_row((now - start, "angle" if angle_stage else "position", phase,
+                   *xyz, lateral, tilt, *targets, *forces))
+        last = (now, lateral, z, forces, tilt)
         if phase == "verify" and verification_started is None:
             verification_started = now
+        if (angle_stage and phase == "verify" and now - verification_started >= RETRY_SETTLE_S
+                and error <= FORCE_TOL_KGF and lateral > xy_tol_mm):
+            angle_stage = False
+            sequence = CounterBend(known_tendon)
+            verification_started = None
+            stable.clear()
+            continue
+        residual = tilt if angle_stage else lateral
         if (phase == "verify" and now - verification_started >= RETRY_SETTLE_S
-                and lateral > xy_tol_mm and error <= FORCE_TOL_KGF and z < 0
+                and residual > tolerance and error <= FORCE_TOL_KGF and z < 0
                 and deadline - now > max(FINAL_S, minimum_verification) + SETTLE_S
                 and sequence.retry()):
             verification_started = None
             stable.clear()
             continue
-        if phase not in ("baseline", "verify") or lateral > xy_tol_mm or z >= 0 or error > FORCE_TOL_KGF:
+        if (phase not in ("baseline", "verify") or lateral > xy_tol_mm or z >= 0
+                or error > FORCE_TOL_KGF or (angle_stage and tilt > tilt_tol_deg)):
             stable.clear()
             continue
         if not stable or stamp > stable[-1][0]:
@@ -184,10 +216,16 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline, known_tendon=Non
         while len(stable) > 1 and stamp - stable[1][0] >= SETTLE_S:
             stable.popleft()
         if stamp - stable[0][0] >= SETTLE_S:
-            if phase == "verify" and now - verification_started < minimum_verification:
+            settle_time = RETRY_SETTLE_S if tilt_tol_deg is not None else minimum_verification
+            if phase == "verify" and now - verification_started < settle_time:
                 continue
             if all(math.dist(xyz, point) <= xy_tol_mm for _, point in stable):
-                return "homed", first, last
+                if tilt_tol_deg is None or angle_stage:
+                    return "homed", first, last
+                angle_stage = True
+                sequence = CounterBend(angle=True)
+                verification_started = None
+                stable.clear()
     return "timeout", first, last
 
 
@@ -198,7 +236,13 @@ def main():
     parser.add_argument("--max-tension-kg", type=positive_float, default=4.5)
     parser.add_argument("--known-tendon", type=int, choices=range(1, 7),
                         help="Use a previously measured inward tendon for pulses of up to 2 s.")
+    parser.add_argument("--tip-axis-marker",
+                        help="Tracked body immediately upstream of arm_tip. Enables angle homing.")
+    parser.add_argument("--tilt-tol-deg", type=positive_float, default=2.0)
     args = parser.parse_args()
+    if args.tip_axis_marker in ("arm_base", "arm_tip"):
+        parser.error("Choose an independently tracked point near the tip.")
+    tilt_tol_deg = args.tilt_tol_deg if args.tip_axis_marker else None
     known_tendon = None if args.known_tendon is None else args.known_tendon - 1
 
     import rclpy
@@ -219,7 +263,7 @@ def main():
     def receive(msg):
         nonlocal pose, source_stamp
         stamp = (msg.header.stamp.sec, msg.header.stamp.nanosec)
-        xyz = relative_pose(msg)
+        xyz = relative_pose(msg, args.tip_axis_marker)
         if xyz is not None and (source_stamp is None or stamp > source_stamp):
             source_stamp = stamp
             pose = (time.monotonic(), xyz)
@@ -243,7 +287,8 @@ def main():
             with path.open("w", newline="") as stream:
                 print(f"Performance CSV: {path}", flush=True)
                 writer = csv.writer(stream)
-                writer.writerow(("elapsed_s", "phase", "x_mm", "y_mm", "z_mm", "lateral_mm",
+                writer.writerow(("elapsed_s", "stage", "phase", "x_mm", "y_mm", "z_mm",
+                                 "lateral_mm", "tip_tilt_deg",
                                  *(f"target_{i}_kgf" for i in range(1, 7)),
                                  *(f"tendon_{i}_kgf" for i in range(1, 7))))
                 deadline = time.monotonic() + MAX_RUN_S
@@ -255,7 +300,7 @@ def main():
                 )
                 try:
                     result, first, last = home(
-                        controller, poll_pose, writer.writerow, args.xy_tol_mm, deadline, known_tendon,
+                        controller, poll_pose, writer.writerow, args.xy_tol_mm, deadline, known_tendon, tilt_tol_deg,
                     )
                 finally:
                     controller.stop()
@@ -268,12 +313,16 @@ def main():
     if first is not None:
         print(f"Initial tip: lateral={math.hypot(*first[:2]):.2f} mm, z={first[2]:.2f} mm")
     if last is not None:
-        stamp, lateral, z, forces = last
+        stamp, lateral, z, forces, tilt = last
         print(f"Last tip: lateral={lateral:.2f} mm, z={z:.2f} mm")
+        if tilt is not None:
+            print(f"Last tip tilt: {tilt:.2f} deg")
         print("Last tensions (kgf): " + ", ".join(f"{force:.3f}" for force in forces))
         print(f"Last sample at {stamp - (deadline - MAX_RUN_S):.2f} s")
     else:
-        print("No paired mocap and load-cell measurements.")
+        print("No complete mocap and load-cell measurements.")
+        if args.tip_axis_marker:
+            print(f"Angle homing requires {args.tip_axis_marker}, arm_tip, and arm_base in one frame.")
     return 0 if result == "homed" else 1
 
 
