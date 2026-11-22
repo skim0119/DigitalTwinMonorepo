@@ -9,6 +9,7 @@
   },
   "max_force_kgf": 4.5,
   "max_step_rate": 3000,
+  "max_tightening_steps": 3000,
   "dashboard_poll_ms": 50,
   "pid_deadband_g": 10.0,
   "pid_output_filter_ms": 150,

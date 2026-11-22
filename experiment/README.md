@@ -19,11 +19,12 @@ Slack delivery fails. Notification failures preserve the experiment exit code.
 
 # Exp 1 bending collection
 
-Run Exp 1 directly on Spirob. Use a Python environment with `control_core` and
+Run both collectors directly on Spirob. Use a Python environment with `control_core` and
 Matplotlib installed, and source the ROS 2 workspace if your shell has not
 already done so. Keep the GPIO streamer and mocap publisher running with
-rigid body names beginning with `arm_` on `/poses`. If the Experiment API service is running
-on Spirob, stop it separately so the collector can take the hardware lock.
+rigid body names beginning with `arm_` on `/poses`. Both collectors take the
+hardware lock directly. Stop the Experiment API service first if it is running
+on Spirob.
 From the repository root on Spirob:
 
 ```sh
@@ -48,15 +49,14 @@ The controller leaves the other five motors inactive and applies no
 pretension to them. Single-mode recordings use the name
 `exp1_single_mode_<current_time>.csv`.
 
-Set `MAX_TIGHTENING_STEPS` to the verified pulse limit for your setup. The
-collector uses the global limits in `pins.json` (4.5 kgf and 3000 steps/s by
-default). Use `--max-tension-kg` to lower the tension limit. Every commanded
+The collector uses the limits in `pins.json` (4.5 kgf, 3000 steps/s, and
+3000 total tightening pulses by default). Use `--max-tightening-steps` to
+override the pulse limit and `--max-tension-kg` to lower the tension limit. Every commanded
 force must stay below that limit. Use `--config` for another pin and PID map.
-By default, both experiments record every rigid body whose name starts with
-`arm_` and require at least one fresh matching pose throughout the run.
-For Exp 1, use `--body arm_tip` to select only the tip, or repeat `--body`
-to require several exact names. With exact names, the collector stops if any
-selected body goes stale.
+Both experiments record every rigid body whose name starts with `arm_` and
+require at least one fresh matching pose throughout the run. Configure the mocap
+publisher to use `arm_tip` for the tip, `arm_base` for the base, and
+`arm_link<N>` for the Nth link. The recordings retain the published names.
 
 Run `python3 debug/watch_posture.py` to watch the same prefix on `/poses`.
 Pass `--name` to watch specific bodies.
@@ -69,7 +69,7 @@ Use 1–80 ASCII letters, digits, hyphens, or underscores.
 The script writes `output/experiment/exp1_<current_time>.csv` on Spirob.
 Each row contains one raw pose with its ROS timestamp,
 frame, cycle-relative elapsed time, and the latest available command and
-measured load for the selected tendon. The two bodies may share a ROS timestamp.
+measured load for the selected tendon. Multiple bodies may share a ROS timestamp.
 The terminal shows the current cycle, target force, and measured load about
 once per second. Ctrl-C stops the trial and exports the samples already recorded. The sibling
 `exp1_<current_time>/` directory contains the raw run files and
@@ -86,11 +86,12 @@ trajectories, a timeline, and the selected tendon's force traces.
 
 ## Exp 2 two-tendon bending collection
 
-Exp 2 uses [Experiment API](../experiment-api/README.md). The default API
-address is `http://127.0.0.1:5052`. Use `--api-url` to select another address.
+Run Exp 2 on Spirob with the same hardware setup and verified tightening pulse
+limit as Exp 1.
 
 ```sh
-python3 experiment/exp2_bending_collection.py -F 2.5 -C 3 --name baseline
+python3 experiment/exp2_bending_collection.py -F 2.5 -C 3 --name baseline \
+  --max-tightening-steps "$MAX_TIGHTENING_STEPS"
 ```
 
 Exp 2 starts T0 and T1 at zero force and follows this cycle:
@@ -104,13 +105,14 @@ The other four tendons hold 0.1 kgf. The peak applies to each active tendon
 and defaults to 2.5 kgf. Both tendons hold peak force together at the end of
 phase 2. The cycle count, step size, and dwell use the same defaults as Exp 1.
 
-The collector saves `output/experiment/exp2_<current_time>.csv` with both
-mocap bodies and both active tendon force channels. The CSV has one row per
+The collector saves `output/experiment/exp2_<current_time>.csv` with every
+matching mocap body and both active tendon force channels. The CSV has one row per
 pose and active tendon. Open it with **Import bending CSV** and use Motion
 Board's Tendon selector to switch between T0 (`tendon_1`) and T1 (`tendon_2`).
-With `--name baseline`, the CSV ends in `_baseline.csv` and the Experiment
-API stores the raw data under `<run_id>_baseline/`. Update and restart the
-API service before using named Exp 2 runs.
+With `--name baseline`, the CSV ends in `_baseline.csv` and the sibling
+`exp2_<current_time>_baseline/` folder contains the raw recording. For both
+experiments, the raw `controls.csv` records all six tendon channels, including
+commanded force, measured load, motor position, and output step rate.
 
 Both experiments generate their force tables with
 [`force_staircase`](quasi_static.py). The trial runner holds each table

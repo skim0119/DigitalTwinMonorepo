@@ -10,9 +10,6 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 if __package__:
     from .quasi_static import PRETENSION_KGF, TENDONS, force_staircase
@@ -21,7 +18,6 @@ else:
 
 BODY_PREFIX = "arm_"
 ROOT = Path(__file__).resolve().parents[1]
-ACTIVE = {"queued", "running", "stopping"}
 FIELDS = ("cycle", "elapsed_s", "ros_stamp_ns", "frame", "body",
           "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw",
           "tendon", "target_kgf", "load_kgf", "run_status", "simulated")
@@ -39,17 +35,16 @@ def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
     return force_staircase((0, 1), waypoints, cycles, steps, dwell, step_kgf=step_kgf)
 
 
-def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=()):
+def export(path, run, poses, controls, tendons, cycle_duration, cycles):
     loads = iter(row for row in controls if row[1] in tendons)
     upcoming = next(loads, None)
     latest = {}
     recorded = set()
-    cycle = 0
     with path.open("x", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(FIELDS)
         for elapsed, stamp, frame, body, *pose in poses:
-            if not (body in bodies if bodies else body.startswith(BODY_PREFIX)):
+            if not body.startswith(BODY_PREFIX):
                 continue
             cycle = min(int(elapsed / cycle_duration), cycles - 1)
             while upcoming is not None and upcoming[0] <= elapsed:
@@ -59,13 +54,11 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=(
                 target, load = latest.get(tendon, (0, ""))
                 writer.writerow((cycle + 1, elapsed - cycle * cycle_duration, stamp, frame,
                                  body, *pose, tendon, target, load, run["status"], run["simulated"]))
-            recorded.add((cycle, body))
-    if bodies:
-        return all((index, body) in recorded for index in range(cycles) for body in bodies)
-    return len({index for index, _ in recorded}) == cycles
+            recorded.add(cycle)
+    return len(recorded) == cycles
 
 
-def collect_local(raw, path, tendons, cycle_duration, cycles, args):
+def collect_local(raw, path, tendons, cycle_duration, cycles, args, *, number):
     import fcntl
 
     sys.path.insert(0, str(ROOT / "experiment-api"))
@@ -76,17 +69,21 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
 
     table = parse_table(raw, "force", "kgf")
     settings = json.loads(args.config.read_text())
+    tightening_limit = args.max_tightening_steps
+    if tightening_limit is None:
+        tightening_limit = settings.get("max_tightening_steps")
+    if type(tightening_limit) is not int or not 0 < tightening_limit <= sys.maxsize:
+        raise ValueError("Set a positive integer max_tightening_steps in the pin config or pass --max-tightening-steps.")
     force_limit, rate_limit = safety_limits(settings)
     max_force = force_limit if args.max_tension_kg is None else args.max_tension_kg
     if not 0 < max_force <= force_limit:
         raise ValueError(f"Tension limit must be positive and at most {force_limit:g} kgf.")
-    bodies = tuple(dict.fromkeys(args.body or ()))
-    body_prefix = None if bodies else BODY_PREFIX
+    active_indices = tuple(TENDONS.index(tendon) for tendon in tendons)
 
     class ForcePID(Hardware):
         def validate(self, table):
             if table.mode != "force" or table.unit != "kgf":
-                raise ValueError("Exp 1 requires force commands in kgf.")
+                raise ValueError("Bending collection requires force commands in kgf.")
             if max(map(max, table.values)) >= max_force:
                 raise ValueError("Every commanded force must be below the tension limit.")
 
@@ -95,7 +92,7 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
                 settings, [(-sys.maxsize, sys.maxsize)] * len(TENDONS),
                 port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
                 max_force=max_force, max_rate=rate_limit,
-                max_tightening_steps=args.max_tightening_steps,
+                max_tightening_steps=tightening_limit,
                 motor=args.tendon if args.single_mode else None,
             )
             self.wait_ready(cancel)
@@ -111,34 +108,36 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
         stopped = False
         run = None
         try:
-            selection = ", ".join(bodies) if bodies else f"{BODY_PREFIX}*"
-            print(f"Waiting for mocap: {selection}", flush=True)
+            print(f"Waiting for mocap: {BODY_PREFIX}*", flush=True)
             experiment.start_mocap()
             deadline = time.monotonic() + 3
             while not experiment.mocap_error and time.monotonic() < deadline:
                 try:
-                    experiment.check_required_bodies(bodies, time.monotonic(), body_prefix)
+                    experiment.check_required_bodies((), time.monotonic(), BODY_PREFIX)
                     break
                 except RuntimeError:
                     time.sleep(0.05)
-            label = "Exp 1 bending collection"
+            label = f"Exp {number} bending collection"
             if args.single_mode:
                 label += " (single mode)"
-            run, = experiment.submit(table, raw, label, 1, bodies, body_prefix=body_prefix)
-            print(f"{label} | T{args.tendon} | Recording run {run['id']}", flush=True)
+            run, = experiment.submit(table, raw, label, 1, body_prefix=BODY_PREFIX)
+            print(f"{label} | Recording run {run['id']}", flush=True)
             next_report = 0.0
             while experiment.worker.is_alive():
                 with experiment.lock:
                     sample = next(
-                        (rows[args.tendon] for _, _, kind, rows in reversed(experiment.preview)
+                        (rows for _, _, kind, rows in reversed(experiment.preview)
                          if kind == "controls"),
                         None,
                     )
-                if sample is not None and sample[0] >= next_report:
-                    elapsed, _, target, _, load, *_ = sample
+                if sample is not None and sample[0][0] >= next_report:
+                    elapsed = sample[0][0]
                     cycle = min(int(elapsed / cycle_duration) + 1, cycles)
-                    print(f"Cycle {cycle}/{cycles} | {elapsed:6.1f} s | "
-                          f"Target {target:.2f} kgf | Load {load:.2f} kgf", flush=True)
+                    readings = []
+                    for index in active_indices:
+                        _, _, target, _, load, *_ = sample[index]
+                        readings.append(f"T{index} target {target:.2f} kgf, load {load:.2f} kgf")
+                    print(f"Cycle {cycle}/{cycles} | {elapsed:6.1f} s | " + " | ".join(readings), flush=True)
                     next_report = elapsed + 1.0
                 time.sleep(0.1)
         except KeyboardInterrupt:
@@ -161,13 +160,14 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
                     yield (float(elapsed), *values)
 
     complete = export(path, run, read_rows("poses.csv"), read_rows("controls.csv"),
-                      tendons, cycle_duration, cycles, bodies)
+                      tendons, cycle_duration, cycles)
     return report_result(path, run, complete, stopped)
 
 
 def main(*, pair=False):
     number = 2 if pair else 1
     parser = argparse.ArgumentParser(description=f"Collect quasi-static SpiRob bending data for Exp {number}.")
+    parser.set_defaults(single_mode=False)
     if not pair:
         parser.add_argument("-N", "--tendon", type=int, choices=range(6), default=0)
         parser.add_argument("--single-mode", action="store_true",
@@ -182,18 +182,14 @@ def main(*, pair=False):
     parser.add_argument("--dwell-s", type=float, default=1.0,
                         help="seconds to hold each setpoint (default: 1)")
     parser.add_argument("--name", help="Append a name to the run folder and CSV")
-    if pair:
-        parser.add_argument("--api-url", default="http://127.0.0.1:5052")
-    else:
-        parser.add_argument("--config", type=Path,
-                            default=Path(os.environ.get("SPIROB_PINS_CONFIG", ROOT / "pins.json")))
-        parser.add_argument("--max-tension-kg", type=float, help="Lower the global tension limit (kgf)")
-        parser.add_argument("--max-tightening-steps", type=int, required=True)
-        parser.add_argument("--body", action="append", help="ROS rigid body to record (repeatable)")
+    parser.add_argument("--config", type=Path,
+                        default=Path(os.environ.get("SPIROB_PINS_CONFIG", ROOT / "pins.json")))
+    parser.add_argument("--max-tension-kg", type=float, help="Lower the global tension limit (kgf)")
+    parser.add_argument("--max-tightening-steps", type=int, help="Override the configured tightening pulse limit")
     args = parser.parse_args()
     if args.name is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", args.name):
         parser.error("--name must contain 1–80 letters, digits, hyphens or underscores")
-    if not pair and not 0 < args.max_tightening_steps <= sys.maxsize:
+    if args.max_tightening_steps is not None and not 0 < args.max_tightening_steps <= sys.maxsize:
         parser.error("Use a positive tightening pulse limit.")
     if not all(math.isfinite(value) and value > 0 for value in (
         args.force_kgf, args.step_kgf, args.dwell_s
@@ -217,7 +213,7 @@ def main(*, pair=False):
 
     folder = ROOT / "output" / "experiment"
     folder.mkdir(parents=True, exist_ok=True)
-    name = "exp1_single_mode" if not pair and args.single_mode else f"exp{number}"
+    name = "exp1_single_mode" if args.single_mode else f"exp{number}"
     stem = f'{name}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}'
     if args.name:
         stem += f"_{args.name}"
@@ -226,10 +222,10 @@ def main(*, pair=False):
 
     settings = load_settings(ROOT / ".env")
     if settings is None:
-        return collect(raw, path, tendons, cycle_duration, args, pair=pair)
+        return collect_local(raw, path, tendons, cycle_duration, args.cycles, args, number=number)
     status = 1
     try:
-        status = collect(raw, path, tendons, cycle_duration, args, pair=pair)
+        status = collect_local(raw, path, tendons, cycle_duration, args.cycles, args, number=number)
         return status
     except KeyboardInterrupt:
         status = 130
@@ -247,60 +243,12 @@ def main(*, pair=False):
             print("Slack accepted the completion message.", flush=True)
 
 
-def collect(raw, path, tendons, cycle_duration, args, *, pair):
-    if not pair:
-        return collect_local(raw, path, tendons, cycle_duration, args.cycles, args)
-
-    def request(route, data=None):
-        try:
-            request = Request(args.api_url.rstrip("/") + route, data=data)
-            with urlopen(request, timeout=10) as response:
-                return json.load(response)
-        except HTTPError as error:
-            raise RuntimeError(error.read().decode()) from error
-
-    health = request("/health")
-    if not health.get("required_body_prefix_supported") or (args.name and not health.get("run_name_supported")):
-        raise RuntimeError("Update and restart Experiment API before collecting bending data.")
-    params = dict(mode="force", unit="kgf", label="Exp 2 bending collection",
-                  reference_ready="true", required_body_prefix=BODY_PREFIX)
-    if args.name:
-        params["name"] = args.name
-    run, = request("/runs?" + urlencode(params), raw)
-    run_id = run["id"]
-    print(f"Recording run {run_id}", flush=True)
-
-    def wait():
-        while True:
-            state = next(run for run in request("/runs") if run["id"] == run_id)
-            if state["status"] not in ACTIVE:
-                return state
-            time.sleep(0.25)
-
-    stopped = False
-    try:
-        run = wait()
-    except KeyboardInterrupt:
-        stopped = True
-        try:
-            request(f"/runs/{run_id}/stop", b"")
-        except RuntimeError:
-            if any(run["id"] == run_id and run["status"] in ACTIVE for run in request("/runs")):
-                raise
-        run = wait()
-
-    poses = request(f"/runs/{run_id}/samples?kind=poses")
-    controls = request(f"/runs/{run_id}/samples?kind=controls")
-    complete = export(path, run, poses, controls, tendons, cycle_duration, args.cycles)
-    return report_result(path, run, complete, stopped)
-
-
 def report_result(path, run, complete, stopped):
     print(path)
     if stopped:
         return 130
     if run["status"] != "complete" or not complete:
-        print(run.get("error") or "Recording ended without the requested pose coverage in each cycle.", file=sys.stderr)
+        print(run.get("error") or "Recording ended without an arm pose in each cycle.", file=sys.stderr)
         return 1
     return 0
 
