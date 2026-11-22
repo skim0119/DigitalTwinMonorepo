@@ -94,9 +94,10 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(client.post("/validate" + mode, content=b"x" * 300000).status_code, 413)
                 self.assertEqual(client.post("/validate" + mode, content=HEADER).status_code, 422)
                 self.assertEqual(client.post("/runs" + mode, content=EXAMPLE, headers={"Origin": "http://example.com"}).status_code, 403)
+                self.assertEqual(client.post("/runs" + mode + "&name=../unsafe", content=EXAMPLE).status_code, 422)
                 with client.websocket_connect("/events") as socket:
                     self.assertEqual(socket.receive_json()["states"], {})
-                    response = client.post("/runs" + mode + "&repeats=2", content=EXAMPLE)
+                    response = client.post("/runs" + mode + "&repeats=2&name=baseline", content=EXAMPLE)
                     self.assertEqual(response.status_code, 202)
                     runs = response.json()
                     self.assertEqual(client.post("/runs" + mode, content=EXAMPLE).status_code, 409)
@@ -110,6 +111,7 @@ class ApiTest(unittest.TestCase):
                     self.assertTrue(any(frame[1] == first and frame[2] == "poses" for frame in frames))
                 self.wait_for(lambda: all(row["status"] == "complete" for row in client.get("/runs").json()))
                 for run in runs:
+                    self.assertTrue(run["id"].endswith("_baseline"))
                     plot = Path(folder) / run["id"] / "diagnostics.png"
                     self.assertEqual(plot.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
                 poses = client.get(f"/runs/{first}/files/poses.csv?download=true")
@@ -174,6 +176,17 @@ class ApiTest(unittest.TestCase):
             with (Path(folder) / run["id"] / "poses.csv").open() as stream:
                 self.assertEqual({row["body"] for row in csv.DictReader(stream)}, {"arm_mid", "arm_joint_2"})
 
+    def test_hold_end_sampling_uses_only_completed_holds(self):
+        from .diagnostics import hold_end_samples
+
+        series = {"arm_tip": [
+            {"elapsed_s": str(time), "x_m": str(time)} for time in (.25, .9, 1, 1.5, 3.1)
+        ]}
+        result = hold_end_samples(series, (0, 1, 2, 3, 4), 3.1)
+        self.assertEqual(result["arm_tip"], [
+            {"elapsed_s": 1, "x_m": "0.9"}, {"elapsed_s": 2, "x_m": "1.5"}
+        ])
+
     def test_optional_webcam_download_on_completion_and_stop(self):
         def webcam(directory, *, filename):
             return lambda: (directory / filename).write_bytes(b"mock MP4")
@@ -195,6 +208,10 @@ class ApiTest(unittest.TestCase):
                     self.wait_for(lambda: experiment.get(run_id)["status"] == expected)
                     self.wait_for(lambda: not experiment.worker.is_alive())
                     self.assertTrue(client.get("/runs").json()[0]["has_video"])
+                    if mode == "force" and not cancel:
+                        for filename in ("diagnostics_step_end.png", "diagnostics_hysteresis.png"):
+                            plot = Path(folder) / run_id / filename
+                            self.assertEqual(plot.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
                     video = client.get(video_path)
                     self.assertEqual(video.content, b"mock MP4")
                     self.assertEqual(video.headers["content-type"], "video/mp4")

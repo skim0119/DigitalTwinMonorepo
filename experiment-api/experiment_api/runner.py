@@ -119,7 +119,7 @@ class Experiments:
             write_json(self.root / run["id"] / "run.json", updated)
             run.update(updated)
 
-    def submit(self, table, raw, label, repeats, required_bodies=(), *, body_prefix=None):
+    def submit(self, table, raw, label, repeats, required_bodies=(), *, body_prefix=None, name=None):
         with self.lock:
             if self.worker and self.worker.is_alive():
                 raise BusyError("A batch is already active.")
@@ -131,6 +131,8 @@ class Experiments:
             runs = []
             for trial in range(1, repeats + 1):
                 run_id = uuid4().hex
+                if name:
+                    run_id += f"_{name}"
                 folder = self.root / run_id
                 folder.mkdir()
                 (folder / "actuation.csv").write_bytes(raw)
@@ -174,7 +176,8 @@ class Experiments:
             try:
                 from .diagnostics import save_diagnostics
 
-                save_diagnostics(self.root / run["id"])
+                save_diagnostics(self.root / run["id"], table,
+                                 complete=failure is None and not self.cancel.is_set())
             except Exception:
                 logger.exception("Could not export diagnostics for trial %s", run["id"])
             if failure is not None:

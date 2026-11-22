@@ -1,3 +1,22 @@
+## Slack completion notifications
+
+On Spirob, put `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` in the repository-root
+`.env`, which Git ignores. Use the channel ID watched by the Mac broker and
+a bot with `chat:write` and access to that channel. Both bending CLIs post
+automatically when Slack is configured. Install the updated `control_core` package on Spirob
+and use the Python environment with `python-dotenv` installed.
+
+On the Mac, arm the pager before launching the experiment over SSH:
+
+```sh
+broker pager --thread "$CODEX_THREAD_ID" --filter-string 'spirob-finished:'
+```
+
+The pager wakes on the next matching completion from either bending CLI.
+The CLI prints the completion token and exit status, then posts them to Slack along with the
+relative CSV path when available. Keep the SSH log to recover the result if
+Slack delivery fails. Notification failures preserve the experiment exit code.
+
 # Exp 1 bending collection
 
 Run Exp 1 directly on Spirob. Use a Python environment with `control_core` and
@@ -35,21 +54,31 @@ default). Use `--max-tension-kg` to lower the tension limit. Every commanded
 force must stay below that limit. Use `--config` for another pin and PID map.
 By default, both experiments record every rigid body whose name starts with
 `arm_` and require at least one fresh matching pose throughout the run.
-For Exp 1, use `--name arm_tip` to select only the tip, or repeat `--name`
+For Exp 1, use `--body arm_tip` to select only the tip, or repeat `--body`
 to require several exact names. With exact names, the collector stops if any
 selected body goes stale.
 
 Run `python3 debug/watch_posture.py` to watch the same prefix on `/poses`.
 Pass `--name` to watch specific bodies.
 
+Both collectors accept `--name NAME` to append `_NAME` to the run folder
+and exported CSV basename. For example, `--name baseline` produces
+`exp1_<current_time>_baseline/` and `exp1_<current_time>_baseline.csv`.
+Use 1–80 ASCII letters, digits, hyphens, or underscores.
+
 The script writes `output/experiment/exp1_<current_time>.csv` on Spirob.
 Each row contains one raw pose with its ROS timestamp,
 frame, cycle-relative elapsed time, and the latest available command and
 measured load for the selected tendon. The two bodies may share a ROS timestamp.
-Ctrl-C stops the trial and exports the samples already recorded. The sibling
+The terminal shows the current cycle, target force, and measured load about
+once per second. Ctrl-C stops the trial and exports the samples already recorded. The sibling
 `exp1_<current_time>/` directory contains the raw run files and
-`diagnostics.png`. Download the CSV or the raw run directory from Spirob when
-you are ready to review it.
+`diagnostics.png` for the full time series, plus `diagnostics_step_end.png`
+with the last recorded pose and force samples within each completed hold.
+`diagnostics_hysteresis.png` plots hold-end posture against measured force
+for each tendon with a varying setpoint, with loading and unloading markers.
+Download the CSV or the raw run directory from Spirob when you are ready
+to review it.
 
 In Motion Board, choose **Import bending CSV** in the Runs sidebar. The file
 opens locally with one selectable trial per cycle, the recorded body
@@ -61,7 +90,7 @@ Exp 2 uses [Experiment API](../experiment-api/README.md). The default API
 address is `http://127.0.0.1:5052`. Use `--api-url` to select another address.
 
 ```sh
-python3 experiment/exp2_bending_collection.py -F 2.5 -C 3
+python3 experiment/exp2_bending_collection.py -F 2.5 -C 3 --name baseline
 ```
 
 Exp 2 starts T0 and T1 at zero force and follows this cycle:
@@ -79,6 +108,9 @@ The collector saves `output/experiment/exp2_<current_time>.csv` with both
 mocap bodies and both active tendon force channels. The CSV has one row per
 pose and active tendon. Open it with **Import bending CSV** and use Motion
 Board's Tendon selector to switch between T0 (`tendon_1`) and T1 (`tendon_2`).
+With `--name baseline`, the CSV ends in `_baseline.csv` and the Experiment
+API stores the raw data under `<run_id>_baseline/`. Update and restart the
+API service before using named Exp 2 runs.
 
 Both experiments generate their force tables with
 [`force_staircase`](quasi_static.py). The trial runner holds each table

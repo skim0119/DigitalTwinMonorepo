@@ -79,7 +79,7 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
     max_force = force_limit if args.max_tension_kg is None else args.max_tension_kg
     if not 0 < max_force <= force_limit:
         raise ValueError(f"Tension limit must be positive and at most {force_limit:g} kgf.")
-    bodies = tuple(dict.fromkeys(args.name or ()))
+    bodies = tuple(dict.fromkeys(args.body or ()))
     body_prefix = None if bodies else BODY_PREFIX
 
     class ForcePID(Hardware):
@@ -124,8 +124,21 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
             if args.single_mode:
                 label += " (single mode)"
             run, = experiment.submit(table, raw, label, 1, bodies, body_prefix=body_prefix)
-            print(f"Recording run {run['id']}", flush=True)
+            print(f"{label} | T{args.tendon} | Recording run {run['id']}", flush=True)
+            next_report = 0.0
             while experiment.worker.is_alive():
+                with experiment.lock:
+                    sample = next(
+                        (rows[args.tendon] for _, _, kind, rows in reversed(experiment.preview)
+                         if kind == "controls"),
+                        None,
+                    )
+                if sample is not None and sample[0] >= next_report:
+                    elapsed, _, target, _, load, *_ = sample
+                    cycle = min(int(elapsed / cycle_duration) + 1, cycles)
+                    print(f"Cycle {cycle}/{cycles} | {elapsed:6.1f} s | "
+                          f"Target {target:.2f} kgf | Load {load:.2f} kgf", flush=True)
+                    next_report = elapsed + 1.0
                 time.sleep(0.1)
         except KeyboardInterrupt:
             stopped = True
@@ -167,6 +180,7 @@ def main(*, pair=False):
                             help="use this many equal increments per phase")
     parser.add_argument("--dwell-s", type=float, default=1.0,
                         help="seconds to hold each setpoint (default: 1)")
+    parser.add_argument("--name", help="Append a name to the run folder and CSV")
     if pair:
         parser.add_argument("--api-url", default="http://127.0.0.1:5052")
     else:
@@ -174,8 +188,10 @@ def main(*, pair=False):
                             default=Path(os.environ.get("SPIROB_PINS_CONFIG", ROOT / "pins.json")))
         parser.add_argument("--max-tension-kg", type=float, help="Lower the global tension limit (kgf)")
         parser.add_argument("--max-tightening-steps", type=int, required=True)
-        parser.add_argument("--name", action="append", help="ROS rigid body to record (repeatable)")
+        parser.add_argument("--body", action="append", help="ROS rigid body to record (repeatable)")
     args = parser.parse_args()
+    if args.name is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", args.name):
+        parser.error("--name must contain 1–80 letters, digits, hyphens or underscores")
     if not pair and not 0 < args.max_tightening_steps <= sys.maxsize:
         parser.error("Use a positive tightening pulse limit.")
     if not all(math.isfinite(value) and value > 0 for value in (
@@ -201,7 +217,36 @@ def main(*, pair=False):
     folder = ROOT / "output" / "experiment"
     folder.mkdir(parents=True, exist_ok=True)
     name = "exp1_single_mode" if not pair and args.single_mode else f"exp{number}"
-    path = folder / f'{name}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}.csv'
+    stem = f'{name}_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}'
+    if args.name:
+        stem += f"_{args.name}"
+    path = folder / f"{stem}.csv"
+    from control_core.slack import load_settings, post_message
+
+    settings = load_settings(ROOT / ".env")
+    if settings is None:
+        return collect(raw, path, tendons, cycle_duration, args, pair=pair)
+    status = 1
+    try:
+        status = collect(raw, path, tendons, cycle_duration, args, pair=pair)
+        return status
+    except KeyboardInterrupt:
+        status = 130
+        raise
+    finally:
+        message = f"spirob-finished: exit={status}"
+        if path.is_file():
+            message += f" csv={path.relative_to(ROOT)}"
+        print(message, flush=True)
+        try:
+            post_message(settings, message)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+        else:
+            print("Slack accepted the completion message.", flush=True)
+
+
+def collect(raw, path, tendons, cycle_duration, args, *, pair):
     if not pair:
         return collect_local(raw, path, tendons, cycle_duration, args.cycles, args)
 
@@ -214,12 +259,13 @@ def main(*, pair=False):
             raise RuntimeError(error.read().decode()) from error
 
     health = request("/health")
-    if not health.get("required_body_prefix_supported"):
-        parser.error("Update and restart Experiment API before collecting bending data.")
-    params = urlencode(dict(mode="force", unit="kgf", label=f"Exp {number} bending collection",
-                            reference_ready="true",
-                            required_body_prefix=BODY_PREFIX))
-    run, = request("/runs?" + params, raw)
+    if not health.get("required_body_prefix_supported") or (args.name and not health.get("run_name_supported")):
+        raise RuntimeError("Update and restart Experiment API before collecting bending data.")
+    params = dict(mode="force", unit="kgf", label="Exp 2 bending collection",
+                  reference_ready="true", required_body_prefix=BODY_PREFIX)
+    if args.name:
+        params["name"] = args.name
+    run, = request("/runs?" + urlencode(params), raw)
     run_id = run["id"]
     print(f"Recording run {run_id}", flush=True)
 

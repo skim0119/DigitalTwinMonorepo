@@ -82,6 +82,7 @@ playback. These semantics can be compared with the simulator when available.
   body and returns one ID per trial. Uploading to `/validate` never starts a trial.
   Add `required_body_prefix=arm_` to record matching bodies and require at least
   one fresh match throughout a live trial.
+  Add `name=baseline` to append `_baseline` to each trial ID and recording folder.
 - `GET /runs` lists trials. `POST /runs/{id}/stop` cancels the active batch.
 - `GET /runs/{id}/files/{name}?download=true` downloads the stored file.
 - `GET /runs/{id}/samples?kind=poses` returns pose rows. Use `kind=controls` for control rows.
@@ -100,8 +101,12 @@ Pose and control rows have independent timestamps. Partial recordings and
 failure reasons are preserved.
 
 After each trial with recorded samples, the runner saves `diagnostics.png` next
-to the CSVs. It shows rigid-body X, Y, and Z positions, tendon commands, and
-measured loads against elapsed time, including for partial recordings.
+to the CSVs. It shows rigid-body XYZ positions and XYZW quaternion components,
+plus tendon commands and measured loads over time, including for partial recordings.
+Force trials also save `diagnostics_step_end.png` when a hold completes.
+Each point uses the last recorded sample within that hold.
+`diagnostics_hysteresis.png` plots hold-end posture against measured force
+for each tendon with a varying setpoint, with loading and unloading markers.
 
 ## Tests
 

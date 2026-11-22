@@ -205,9 +205,11 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
     except KeyboardInterrupt:
         print("\nInterrupted, stopping.")
     except RuntimeError as error:
-        if str(error) not in {"Measured tension reached the configured limit", "Tightening STEP limit reached"}:
+        message = str(error)
+        if (not message.startswith("Measured tension reached the configured limit")
+                and message != "Tightening STEP limit reached"):
             raise
-        print(f"\nTrial stopped: {error}")
+        print(f"\nTrial stopped: {message}")
     finally:
         controller.stop()
         for index, channel in zip(selected, channels):

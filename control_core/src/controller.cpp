@@ -128,6 +128,7 @@ class Controller {
     int receiver = -1;
     std::atomic<bool> stopping{false};
     std::atomic<const char*> fault{nullptr};
+    char tension_fault[160]{};
     std::mutex lifecycle;
     // Protected by each channel's mutex. A snapshot/command locks all channels.
     Clock::time_point expires{};
@@ -181,8 +182,14 @@ class Controller {
                             const auto reading = next[i];
                             std::lock_guard lock(channel.mutex);
                             if (reading.stamp == channel.reading.stamp) continue;
-                            if (reading.stamp != Clock::time_point{} && reading.force >= max_force)
-                                fail("Measured tension reached the configured limit");
+                            if (reading.stamp != Clock::time_point{} && reading.force >= max_force) {
+                                std::snprintf(tension_fault, sizeof(tension_fault),
+                                              "Measured tension reached the configured limit on motor %zu "
+                                              "(tendon_%zu): unfiltered %.9g kgf, limit %.9g kgf",
+                                              i, i + 1, reading.force, max_force);
+                                fail(tension_fault);
+                                return;  // Keep the published fault message immutable.
+                            }
                             if (reading.stamp == Clock::time_point{}) {
                                 channel.samples_to_recover = 2;
                             } else if (channel.samples_to_recover == 0 || --channel.samples_to_recover == 0) {

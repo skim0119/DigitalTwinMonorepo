@@ -155,7 +155,7 @@ class NativeControllerTest(unittest.TestCase):
             try:
                 self.controller.ready()
             except RuntimeError as error:
-                self.assertIn("tension", str(error))
+                self.assertIn("motor 0 (tendon_1): unfiltered 1.1 kgf, limit 1 kgf", str(error))
                 return True
             return False
 
