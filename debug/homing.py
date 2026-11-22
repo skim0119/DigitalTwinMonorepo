@@ -117,10 +117,15 @@ def home(controller, poll_pose, write_row, xy_tol_mm, deadline):
             continue
         next_sample = now + 0.05
         try:
-            ready = controller.ready()
-            if not ready or pose is None or now - pose[0] > POSE_MAX_AGE_S:
+            if pose is None or now - pose[0] > POSE_MAX_AGE_S:
                 if last is not None:
-                    return "sensor data lost", first, last
+                    return "mocap data lost", first, last
+                continue
+            if not controller.ready():
+                stable.clear()
+                if last is not None:
+                    # Native PID pauses stale channels while it waits for fresh readings.
+                    controller.command(TARGETS, True, min(0.15, deadline - now))
                 continue
             phase, targets = sequence.command(now, deadline, pose[1], xy_tol_mm)
             controller.command(targets, True, min(0.15, deadline - now))
