@@ -7,6 +7,9 @@
     "dout": "Pi input from the HX711 DOUT pin",
     "sck": "Pi output to the HX711 PD_SCK pin"
   },
+  "max_force_kgf": 4.5,
+  "max_step_rate": 3000,
+  "dashboard_poll_ms": 50,
   "pid_deadband_g": 10.0,
   "pid_output_filter_ms": 150,
   "pid_filter_alpha": 0.4,

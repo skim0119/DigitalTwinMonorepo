@@ -366,7 +366,7 @@ public:
           deadband(band / 1000), alpha(smoothing), max_acceleration(acceleration), output_tau(output_filter_ms / 1000),
           selected(motor), excluded(skip_motor), manual(manual_motion), tightening_limit(max_tightening_steps) {
         if (motors.size() != channels.size() || port < 1 || port > 65535 ||
-            !std::isfinite(force) || force <= 0 || !(rate > 0 && rate <= 2133) ||
+            !std::isfinite(force) || force <= 0 || !std::isfinite(rate) || rate <= 0 ||
             !std::isfinite(band) || band < 0 || !(alpha > 0 && alpha <= 1) ||
             !std::isfinite(output_filter_ms) || output_filter_ms < 0 || !std::isfinite(max_acceleration) || max_acceleration < 0 ||
             selected < -1 || selected >= 6 || excluded < -1 || excluded >= 6 ||

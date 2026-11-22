@@ -1,15 +1,33 @@
 """Native force and motion control for the Spirob Pi."""
 
 import json
+import math
 from pathlib import Path
 
-from ._native import Controller
+
+def safety_limits(config):
+    """Read global limits, allowing older alternate pin maps to omit them."""
+    keys = ("max_force_kgf", "max_step_rate")
+    if not all(key in config for key in keys):
+        defaults = json.loads(Path("pins.json").read_text())
+        config = {**defaults, **config}
+    force, rate = (float(config[key]) for key in keys)
+    if not all(math.isfinite(value) and value > 0 for value in (force, rate)):
+        raise ValueError("Global force and step-rate limits must be finite and positive")
+    return force, rate
 
 
-def open_controller(config_path, step_bounds, *, port=5050, max_force, max_rate, simulate=False,
+def open_controller(config_path, step_bounds, *, port=5050, max_force=None, max_rate=None, simulate=False,
                     motor=None, max_tightening_steps=0, manual_motion=False, skip_motor=None):
     """Open native workers from a settings file or a loaded settings dictionary."""
     config = config_path if isinstance(config_path, dict) else json.loads(Path(config_path).read_text())
+    from ._native import Controller
+
+    force_limit, rate_limit = safety_limits(config)
+    max_force = force_limit if max_force is None else max_force
+    max_rate = rate_limit if max_rate is None else max_rate
+    if not (0 < max_force <= force_limit and 0 < max_rate <= rate_limit):
+        raise ValueError("Requested force and step-rate limits must be positive and within global limits")
     motors = config["motors"]
     if [motor["motor"] for motor in motors] != list(range(6)) or len(step_bounds) != 6:
         raise ValueError("Expected motors 0 through 5 and six step ranges")
@@ -35,5 +53,5 @@ def open_manual_controller(config_path, *, max_rate=800, simulate=False, motor=N
     """Open a bench controller with session-relative pulse counts and no HX711 input."""
     # The bench tools have no calibrated arm reference. These are counter bounds.
     bounds = [(-2**31, 2**31 - 1)] * 6
-    return open_controller(config_path, bounds, max_force=1, max_rate=max_rate,
+    return open_controller(config_path, bounds, max_rate=max_rate,
                            simulate=simulate, motor=motor, manual_motion=True)

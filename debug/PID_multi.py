@@ -16,7 +16,6 @@ from tempfile import mkdtemp
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "pins.json"
 OUTPUT_DIR = DEFAULT_CONFIG.parent / "output"
 TELEMETRY_INTERVAL = 0.065
-MAX_STEP_RATE = 2133
 
 
 def parse_args():
@@ -106,7 +105,7 @@ def save_combined_plot(channels, plot_path):
 
 
 def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
-    from control_core import open_controller
+    from control_core import open_controller, safety_limits
 
     if motor is not None and motor not in range(6):
         raise ValueError("Motor must be between 0 and 5")
@@ -118,6 +117,7 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
         raise ValueError("Trial duration must be positive and finite")
 
     settings = json.loads(Path(config).read_text())
+    force_limit, max_rate = safety_limits(settings)
     overrides = tuning or {}
     selected = tuple(index for index in range(6) if index != skip_motor) if motor is None else (motor,)
     schedule = tuple(overrides.get("setpoint_schedule", [0.1]))
@@ -127,10 +127,12 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
     hold_s = math.inf if duration_s is None else duration_s / len(schedule)
     tension_limit = overrides.get("max_tension_kg")
     tightening_limit = overrides.get("max_tightening_steps")
-    if tension_limit is not None and not math.isfinite(tension_limit):
-        raise ValueError("Tension limit must be finite")
+    if tension_limit is None:
+        tension_limit = force_limit
+    if not 0 < tension_limit <= force_limit:
+        raise ValueError(f"Tension limit must be positive and at most {force_limit:g} kgf")
     if any(not math.isfinite(value) or value < 0 or
-           (tension_limit is not None and value >= tension_limit) for value in schedule):
+           value >= tension_limit for value in schedule):
         raise ValueError("Target must be finite, nonnegative, and below the tension limit")
     if overrides.get("deadband_g") is not None:
         settings["pid_deadband_g"] = overrides["deadband_g"]
@@ -153,7 +155,7 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
         "duration_s": duration_s,
         "max_tension_kg": tension_limit,
         "max_tightening_steps": tightening_limit,
-        "max_step_rate": MAX_STEP_RATE,
+        "max_step_rate": max_rate,
         "settings": settings,
     }
     (run_dir / "run.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
@@ -162,8 +164,8 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
     controller = open_controller(
         settings, [(-sys.maxsize, sys.maxsize)] * 6,
         port=int(os.getenv("SPIROB_MONITOR_PORT", "5050")),
-        max_force=sys.float_info.max if tension_limit is None else tension_limit,
-        max_rate=MAX_STEP_RATE, motor=motor, skip_motor=skip_motor,
+        max_force=tension_limit,
+        max_rate=max_rate, motor=motor, skip_motor=skip_motor,
         max_tightening_steps=0 if tightening_limit is None else tightening_limit,
     )
     targets = [target if index in selected else 0.0 for index in range(6)]

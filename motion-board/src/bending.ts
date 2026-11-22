@@ -17,7 +17,7 @@ export function readBendingCsv(text: string, name: string, batch: string, create
     const trial = Number(cycle), time = Number(elapsed);
     if (fields.length !== 17 || !Number.isInteger(trial) || trial < 1 || trial > 30 ||
         elapsed === '' || !Number.isFinite(time) || time < 0 || !/^\d+$/.test(stamp) ||
-        !frame || !['arm_base', 'arm_tip'].includes(body.replace('-', '_')) || !pose.every(Number.isFinite) ||
+        !frame || !body.trim() || !pose.every(Number.isFinite) ||
         !Math.hypot(...pose.slice(3)) || !/^tendon_[1-6]$/.test(tendon) ||
         target === '' || !Number.isFinite(Number(target)) ||
         (load !== '' && !Number.isFinite(Number(load))) ||

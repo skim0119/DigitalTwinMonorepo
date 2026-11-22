@@ -66,7 +66,8 @@ def create_app(experiments):
 
     @app.get("/health")
     def health():
-        return {"simulated": experiments.simulated, "required_body_supported": True}
+        return {"simulated": experiments.simulated, "required_body_supported": True,
+                "required_body_prefix_supported": True}
 
     @app.post("/validate")
     async def validate(request: Request, mode: str, unit: str):
@@ -80,13 +81,14 @@ def create_app(experiments):
     @app.post("/runs", status_code=202)
     async def start(request: Request, mode: str, unit: str,
                     repeats: int = Query(1, ge=1, le=30), label: str = Query("Experiment", max_length=100),
-                    reference_ready: bool = False, required_body: list[str] = Query(default=[])):
+                    reference_ready: bool = False, required_body: list[str] = Query(default=[]),
+                    required_body_prefix: str | None = Query(None, min_length=1)):
         table, raw = await table_from(request, mode, unit)
         if not experiments.simulated and not reference_ready:
             raise HTTPException(422, "Confirm the arm is at its calibrated zero and preload.")
         try:
             return await asyncio.to_thread(experiments.submit, table, raw, label.strip() or "Experiment",
-                                           repeats, tuple(required_body))
+                                           repeats, tuple(required_body), body_prefix=required_body_prefix)
         except BusyError as error:
             raise HTTPException(409, str(error)) from error
 

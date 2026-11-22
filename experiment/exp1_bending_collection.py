@@ -18,7 +18,7 @@ if __package__:
 else:
     from quasi_static import PRETENSION_KGF, TENDONS, force_staircase
 
-BODIES = ("arm_base", "arm_tip")
+BODY_PREFIX = "arm_"
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVE = {"queued", "running", "stopping"}
 FIELDS = ("cycle", "elapsed_s", "ros_stamp_ns", "frame", "body",
@@ -38,7 +38,7 @@ def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
     return force_staircase((0, 1), waypoints, cycles, steps, dwell, step_kgf=step_kgf)
 
 
-def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=BODIES):
+def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=()):
     loads = iter(row for row in controls if row[1] in tendons)
     upcoming = next(loads, None)
     latest = {}
@@ -48,7 +48,7 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=B
         writer = csv.writer(stream)
         writer.writerow(FIELDS)
         for elapsed, stamp, frame, body, *pose in poses:
-            if body not in bodies:
+            if not (body in bodies if bodies else body.startswith(BODY_PREFIX)):
                 continue
             cycle = min(int(elapsed / cycle_duration), cycles - 1)
             while upcoming is not None and upcoming[0] <= elapsed:
@@ -59,33 +59,41 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles, bodies=B
                 writer.writerow((cycle + 1, elapsed - cycle * cycle_duration, stamp, frame,
                                  body, *pose, tendon, target, load, run["status"], run["simulated"]))
             recorded.add((cycle, body))
-    return all((index, body) in recorded for index in range(cycles) for body in bodies)
+    if bodies:
+        return all((index, body) in recorded for index in range(cycles) for body in bodies)
+    return len({index for index, _ in recorded}) == cycles
 
 
 def collect_local(raw, path, tendons, cycle_duration, cycles, args):
     import fcntl
 
     sys.path.insert(0, str(ROOT / "experiment-api"))
-    from control_core import open_controller
+    from control_core import open_controller, safety_limits
     from experiment_api.hardware import Hardware
     from experiment_api.runner import Experiments
     from experiment_api.table import parse_table
 
     table = parse_table(raw, "force", "kgf")
-    bodies = tuple(dict.fromkeys(args.name or BODIES))
+    settings = json.loads(args.config.read_text())
+    force_limit, rate_limit = safety_limits(settings)
+    max_force = force_limit if args.max_tension_kg is None else args.max_tension_kg
+    if not 0 < max_force <= force_limit:
+        raise ValueError(f"Tension limit must be positive and at most {force_limit:g} kgf.")
+    bodies = tuple(dict.fromkeys(args.name or ()))
+    body_prefix = None if bodies else BODY_PREFIX
 
     class ForcePID(Hardware):
         def validate(self, table):
             if table.mode != "force" or table.unit != "kgf":
                 raise ValueError("Exp 1 requires force commands in kgf.")
-            if max(map(max, table.values)) >= args.max_tension_kg:
-                raise ValueError("Every commanded force must be below --max-tension-kg.")
+            if max(map(max, table.values)) >= max_force:
+                raise ValueError("Every commanded force must be below the tension limit.")
 
         def open(self, _table, cancel):
             self.controller = open_controller(
-                args.config, [(-sys.maxsize, sys.maxsize)] * len(TENDONS),
+                settings, [(-sys.maxsize, sys.maxsize)] * len(TENDONS),
                 port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
-                max_force=args.max_tension_kg, max_rate=2133,
+                max_force=max_force, max_rate=rate_limit,
                 max_tightening_steps=args.max_tightening_steps,
                 motor=args.tendon if args.single_mode else None,
             )
@@ -102,18 +110,20 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args):
         stopped = False
         run = None
         try:
+            selection = ", ".join(bodies) if bodies else f"{BODY_PREFIX}*"
+            print(f"Waiting for mocap: {selection}", flush=True)
             experiment.start_mocap()
             deadline = time.monotonic() + 3
             while not experiment.mocap_error and time.monotonic() < deadline:
-                with experiment.lock:
-                    if all(time.monotonic() - experiment.last_body_pose.get(body, -math.inf) <= 1
-                           for body in bodies):
-                        break
-                time.sleep(0.05)
+                try:
+                    experiment.check_required_bodies(bodies, time.monotonic(), body_prefix)
+                    break
+                except RuntimeError:
+                    time.sleep(0.05)
             label = "Exp 1 bending collection"
             if args.single_mode:
                 label += " (single mode)"
-            run, = experiment.submit(table, raw, label, 1, bodies)
+            run, = experiment.submit(table, raw, label, 1, bodies, body_prefix=body_prefix)
             print(f"Recording run {run['id']}", flush=True)
             while experiment.worker.is_alive():
                 time.sleep(0.1)
@@ -162,13 +172,12 @@ def main(*, pair=False):
     else:
         parser.add_argument("--config", type=Path,
                             default=Path(os.environ.get("SPIROB_PINS_CONFIG", ROOT / "pins.json")))
-        parser.add_argument("--max-tension-kg", type=float, required=True)
+        parser.add_argument("--max-tension-kg", type=float, help="Lower the global tension limit (kgf)")
         parser.add_argument("--max-tightening-steps", type=int, required=True)
         parser.add_argument("--name", action="append", help="ROS rigid body to record (repeatable)")
     args = parser.parse_args()
-    if not pair and not (math.isfinite(args.max_tension_kg) and args.max_tension_kg > 0
-                         and 0 < args.max_tightening_steps <= sys.maxsize):
-        parser.error("Use a finite positive tension limit and a positive tightening pulse limit.")
+    if not pair and not 0 < args.max_tightening_steps <= sys.maxsize:
+        parser.error("Use a positive tightening pulse limit.")
     if not all(math.isfinite(value) and value > 0 for value in (
         args.force_kgf, args.step_kgf, args.dwell_s
     )):
@@ -205,11 +214,11 @@ def main(*, pair=False):
             raise RuntimeError(error.read().decode()) from error
 
     health = request("/health")
-    if not health.get("required_body_supported"):
+    if not health.get("required_body_prefix_supported"):
         parser.error("Update and restart Experiment API before collecting bending data.")
     params = urlencode(dict(mode="force", unit="kgf", label=f"Exp {number} bending collection",
                             reference_ready="true",
-                            required_body=BODIES), doseq=True)
+                            required_body_prefix=BODY_PREFIX))
     run, = request("/runs?" + params, raw)
     run_id = run["id"]
     print(f"Recording run {run_id}", flush=True)
@@ -244,7 +253,7 @@ def report_result(path, run, complete, stopped):
     if stopped:
         return 130
     if run["status"] != "complete" or not complete:
-        print(run.get("error") or "Recording ended without every selected body in each cycle.", file=sys.stderr)
+        print(run.get("error") or "Recording ended without the requested pose coverage in each cycle.", file=sys.stderr)
         return 1
     return 0
 

@@ -63,6 +63,7 @@ class Experiments:
         self.mocap_stop = threading.Event()
         self.mocap_ready = threading.Event()
         self.poses = None
+        self.pose_prefix = None
         self.last_pose = 0
         self.last_body_pose = {}
         self.mocap_error = None
@@ -97,7 +98,7 @@ class Experiments:
         with self.lock:
             self.last_pose = now
             self.last_body_pose[name] = now
-            if self.poses is not None:
+            if self.poses is not None and (self.pose_prefix is None or name.startswith(self.pose_prefix)):
                 try:
                     self.poses.put_nowait((now, str(stamp), frame, name, *values))
                 except Full:
@@ -118,7 +119,7 @@ class Experiments:
             write_json(self.root / run["id"] / "run.json", updated)
             run.update(updated)
 
-    def submit(self, table, raw, label, repeats, required_bodies=()):
+    def submit(self, table, raw, label, repeats, required_bodies=(), *, body_prefix=None):
         with self.lock:
             if self.worker and self.worker.is_alive():
                 raise BusyError("A batch is already active.")
@@ -138,7 +139,8 @@ class Experiments:
                 self.mark(run, "queued")
                 self.runs[run_id] = run
                 runs.append(run)
-            self.worker = threading.Thread(target=self.play, args=(table, runs, required_bodies), name="trial-runner")
+            self.worker = threading.Thread(target=self.play, args=(table, runs, required_bodies, body_prefix),
+                                           name="trial-runner")
             self.worker.start()
             return [run.copy() for run in runs]
 
@@ -157,13 +159,13 @@ class Experiments:
             self.sequence += 1
             self.preview.append((self.sequence, run_id, kind, data))
 
-    def play(self, table, runs, required_bodies):
+    def play(self, table, runs, required_bodies, body_prefix):
         for run in runs:
             if self.cancel.is_set():
                 self.mark(run, "cancelled")
                 continue
             try:
-                self.record(table, run, required_bodies)
+                self.record(table, run, required_bodies, body_prefix)
             except Exception as error:
                 self.cancel.set()
                 failure = str(error)
@@ -182,17 +184,22 @@ class Experiments:
                 if run is not runs[-1]:
                     self.cancel.wait(self.repeat_pause)
 
-    def check_required_bodies(self, names, now):
+    def check_required_bodies(self, names, now, body_prefix=None):
         with self.lock:
             missing = [name for name in names if now - self.last_body_pose.get(name, -math.inf) > 1]
+            if body_prefix is not None and not any(
+                name.startswith(body_prefix) and now - timestamp <= 1
+                for name, timestamp in self.last_body_pose.items()
+            ):
+                raise RuntimeError(f"No recent mocap pose with prefix {body_prefix!r}.")
         if missing:
             raise RuntimeError("No recent mocap pose for " + ", ".join(missing) + ".")
 
-    def record(self, table, run, required_bodies):
+    def record(self, table, run, required_bodies, body_prefix):
         if not self.simulated and (self.mocap_error or time.monotonic() - self.last_pose > 1):
             raise RuntimeError(self.mocap_error or "No recent OptiTrack poses. Check the ROS bridge.")
         if not self.simulated:
-            self.check_required_bodies(required_bodies, time.monotonic())
+            self.check_required_bodies(required_bodies, time.monotonic(), body_prefix)
         folder = self.root / run["id"]
         with (folder / "poses.csv").open("w", newline="", buffering=1) as pose_file, \
                 (folder / "controls.csv").open("w", newline="", buffering=1) as control_file:
@@ -215,6 +222,7 @@ class Experiments:
                 start = time.monotonic()
                 end = start + table.duration
                 with self.lock:
+                    self.pose_prefix = body_prefix
                     self.poses = queue
                     self.pose_overrun = False
                     if not self.cancel.is_set():
@@ -227,8 +235,8 @@ class Experiments:
                     if self.pose_overrun or (not self.simulated and
                             (self.mocap_error or now - self.last_pose > 1)):
                         raise RuntimeError("Pose recording was interrupted or fell behind.")
-                    if required_bodies and not self.simulated:
-                        self.check_required_bodies(required_bodies, now)
+                    if (required_bodies or body_prefix) and not self.simulated:
+                        self.check_required_bodies(required_bodies, now, body_prefix)
                     values = table.at(now - start)
                     outputs = self.hardware.update(table, values, now, max(now - previous, 0.001), end)
                     if outputs is None:
@@ -243,7 +251,7 @@ class Experiments:
                         tip = (x, x * math.sin(now - start), 0.14 + abs(x) * 0.5,
                                0, 0, math.sin(x), math.cos(x))
                         self.on_pose(now, stamp, "world", "Rigid Body 001", tip)
-                        if required_bodies:
+                        if required_bodies or body_prefix:
                             self.on_pose(now, stamp, "world", "arm_tip", tip)
                             self.on_pose(now, stamp, "world", "arm_base", (0, 0, 0.3, 0, 0, 0, 1))
                     self.drain(queue, start, end, pose_csv, latest)

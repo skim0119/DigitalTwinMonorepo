@@ -41,8 +41,9 @@ load-cell readers before operating. Match `SPIROB_MONITOR_PORT` to the
 streamer's port if it differs from 5050.
 
 A calibration JSON must have six signed, nonzero `steps_per_mm` values, six
-`travel_mm` pairs containing zero, a positive `max_force_kgf`, and a positive
-`max_step_rate` no greater than the controller's 2133 steps/s limit. The sign
+`travel_mm` pairs containing zero. Force and speed default to the global limits
+in [pins.json](../pins.json) (4.5 kgf and 3000 steps/s). Set `max_force_kgf` or
+`max_step_rate` in the calibration file to use a lower limit. The sign
 maps positive CSV travel to the calibrated motor direction. Supply measured
 values for the installed setup. The Pi uses commanded steps to estimate travel.
 It has no independent absolute-position measurement.
@@ -79,6 +80,8 @@ playback. These semantics can be compared with the simulator when available.
 - `POST /validate?mode=force&unit=N` checks and previews a CSV request body.
 - `POST /runs?mode=force&unit=N&repeats=3&reference_ready=true` submits the CSV
   body and returns one ID per trial. Uploading to `/validate` never starts a trial.
+  Add `required_body_prefix=arm_` to record matching bodies and require at least
+  one fresh match throughout a live trial.
 - `GET /runs` lists trials. `POST /runs/{id}/stop` cancels the active batch.
 - `GET /runs/{id}/files/{name}?download=true` downloads the stored file.
 - `GET /runs/{id}/samples?kind=poses` returns pose rows. Use `kind=controls` for control rows.

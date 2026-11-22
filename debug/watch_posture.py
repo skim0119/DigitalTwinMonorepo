@@ -6,8 +6,8 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--name", action="extend", nargs="+", required=True,
-        help="Rigid body names to watch (may be repeated)",
+        "--name", action="extend", nargs="+",
+        help="Rigid body names to watch (default: all arm_* bodies)",
     )
     args = parser.parse_args()
 
@@ -16,11 +16,11 @@ def main():
     from rclpy.executors import ExternalShutdownException
     from rclpy.qos import qos_profile_sensor_data
 
-    latest = dict.fromkeys(args.name)
+    latest = dict.fromkeys(args.name or ())
 
     def receive(msg):
         for body in msg.poses:
-            if body.name in latest:
+            if body.name in latest or (args.name is None and body.name.startswith("arm_")):
                 latest[body.name] = body.pose
 
     def report():
@@ -34,7 +34,7 @@ def main():
                 f"{name}: position (x, y, z)=({p.x:.6f}, {p.y:.6f}, {p.z:.6f}) "
                 f"quaternion (x, y, z, w)=({q.x:.6f}, {q.y:.6f}, {q.z:.6f}, {q.w:.6f})"
             )
-        print("\n".join(lines), flush=True)
+        print("\n".join(lines) or "Waiting for arm_* poses", flush=True)
 
     rclpy.init()
     node = rclpy.create_node("watch_posture")

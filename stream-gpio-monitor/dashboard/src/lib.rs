@@ -106,6 +106,17 @@ fn App() -> Element {
     let error = use_context_provider(|| Signal::new(String::new()));
     let mut tab = use_signal(|| 0);
     use_future(move || async move {
+        #[derive(serde::Deserialize)]
+        struct DashboardSettings {
+            dashboard_poll_ms: u32,
+        }
+
+        let settings: DashboardSettings = serde_json::from_str(include_str!("../../../pins.json"))
+            .expect("valid dashboard settings");
+        assert!(
+            settings.dashboard_poll_ms > 0,
+            "dashboard polling interval must be positive"
+        );
         loop {
             let cursor = dashboard.peek().history.last().map_or(0, |point| point.id);
             match fetch_snapshot(cursor).await {
@@ -116,7 +127,7 @@ fn App() -> Element {
                     state.disconnected = true;
                 }
             }
-            TimeoutFuture::new(100).await;
+            TimeoutFuture::new(settings.dashboard_poll_ms).await;
         }
     });
 

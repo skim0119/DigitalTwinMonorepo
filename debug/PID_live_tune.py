@@ -9,7 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from PID_multi import DEFAULT_CONFIG, MAX_STEP_RATE
+from PID_multi import DEFAULT_CONFIG
 
 REFRESH_MS = 50
 WINDOW_S = 15
@@ -27,7 +27,7 @@ class LiveTuner:
         self.connect_controller = lambda: open_controller(
             settings, [(-sys.maxsize, sys.maxsize)] * 6,
             port=int(os.getenv("SPIROB_MONITOR_PORT", "5050")),
-            max_force=max_tension, max_rate=MAX_STEP_RATE,
+            max_force=max_tension,
             motor=motor, max_tightening_steps=max_steps,
         )
         self.origin = time.monotonic()

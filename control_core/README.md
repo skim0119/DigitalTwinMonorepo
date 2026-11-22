@@ -20,8 +20,10 @@ configured in root `pins.json`. The existing monitor still receives averaged
 values. Stop any standalone motor or HX711 scripts before a live trial.
 
 Launch the experiment API from the repository root so it can read `pins.json`,
-or set `SPIROB_PINS_CONFIG` to the full path. The API calibration file supplies
-verified force, travel, and speed limits. Native workers stop on an expired
+or set `SPIROB_PINS_CONFIG` to the full path. The global limits in
+[pins.json](../pins.json) default to 4.5 kgf and 3000 steps/s. The API
+calibration file supplies verified travel and can set lower force and speed
+limits. Native workers stop on an expired
 command, stale sensor data, or measured tension at the configured limit.
 An invalid conversion pauses STEP pulses until two valid conversions arrive.
 A silent sensor pauses motion after 250 ms without a usable conversion.

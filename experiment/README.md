@@ -3,13 +3,13 @@
 Run Exp 1 directly on Spirob. Use a Python environment with `control_core` and
 Matplotlib installed, and source the ROS 2 workspace if your shell has not
 already done so. Keep the GPIO streamer and mocap publisher running with
-`arm_base` and `arm_tip` on `/poses`. If the Experiment API service is running
+rigid body names beginning with `arm_` on `/poses`. If the Experiment API service is running
 on Spirob, stop it separately so the collector can take the hardware lock.
 From the repository root on Spirob:
 
 ```sh
 python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3 \
-  --max-tension-kg "$MAX_TENSION_KG" --max-tightening-steps "$MAX_TIGHTENING_STEPS"
+  --max-tightening-steps "$MAX_TIGHTENING_STEPS"
 ```
 
 `-N` is zero-based, so tendon 0 is `tendon_1` in Motion Board. `-F` sets the
@@ -29,12 +29,18 @@ The controller leaves the other five motors inactive and applies no
 pretension to them. Single-mode recordings use the name
 `exp1_single_mode_<current_time>.csv`.
 
-Set the two limit variables to the verified limits for your setup. The tension
-limit must exceed every commanded force. The collector uses the PID and GPIO
-settings in `pins.json` by default; use `--config` for another settings file.
-Use `--name arm_tip` to export just the tip, or repeat `--name` to select several
-bodies. The default export includes `arm_base` and `arm_tip`. The collector
-stops if any selected body's pose stream goes stale.
+Set `MAX_TIGHTENING_STEPS` to the verified pulse limit for your setup. The
+collector uses the global limits in `pins.json` (4.5 kgf and 3000 steps/s by
+default). Use `--max-tension-kg` to lower the tension limit. Every commanded
+force must stay below that limit. Use `--config` for another pin and PID map.
+By default, both experiments record every rigid body whose name starts with
+`arm_` and require at least one fresh matching pose throughout the run.
+For Exp 1, use `--name arm_tip` to select only the tip, or repeat `--name`
+to require several exact names. With exact names, the collector stops if any
+selected body goes stale.
+
+Run `python3 debug/watch_posture.py` to watch the same prefix on `/poses`.
+Pass `--name` to watch specific bodies.
 
 The script writes `output/experiment/exp1_<current_time>.csv` on Spirob.
 Each row contains one raw pose with its ROS timestamp,
@@ -46,7 +52,7 @@ Ctrl-C stops the trial and exports the samples already recorded. The sibling
 you are ready to review it.
 
 In Motion Board, choose **Import bending CSV** in the Runs sidebar. The file
-opens locally with one selectable trial per cycle, the base and tip
+opens locally with one selectable trial per cycle, the recorded body
 trajectories, a timeline, and the selected tendon's force traces.
 
 ## Exp 2 two-tendon bending collection

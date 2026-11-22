@@ -28,9 +28,18 @@ class TableTest(unittest.TestCase):
             with self.subTest(row=row), self.assertRaises(ValueError):
                 parse_table(HEADER + ZERO + row, "force", "N")
 
+    def test_calibration_defaults_and_global_caps(self):
+        calibration = dict(steps_per_mm=[2] * 6, travel_mm=[[0, 20]] * 6)
+        limits = (4.5, 3000)
+        config = Calibration.load(calibration, limits)
+        self.assertEqual((config.max_force_kgf, config.max_step_rate), limits)
+        for overrides in ({"max_force_kgf": 4.6}, {"max_step_rate": 3001}):
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, "global"):
+                Calibration.load({**calibration, **overrides}, limits)
+
     def test_hardware_unit_and_speed_contract(self):
         config = Calibration.load(dict(steps_per_mm=[-2, 2, 2, 2, 2, 2],
-                                      travel_mm=[[0, 20]] * 6, max_force_kgf=1, max_step_rate=100))
+                                      travel_mm=[[0, 20]] * 6, max_force_kgf=1, max_step_rate=100), (4.5, 3000))
         config.validate(parse_table(EXAMPLE, "displacement", "mm"))
         with self.assertRaisesRegex(ValueError, "force command"):
             config.validate(parse_table(EXAMPLE, "force", "kgf"))
@@ -121,7 +130,7 @@ class ApiTest(unittest.TestCase):
 
     def test_required_body_missing_prevents_hardware_open(self):
         calibration = Calibration.load(dict(steps_per_mm=[2] * 6, travel_mm=[[0, 20]] * 6,
-                                            max_force_kgf=1, max_step_rate=100))
+                                            max_force_kgf=1, max_step_rate=100), (4.5, 3000))
         opened = []
         hardware = Hardware(calibration, open_controller=lambda *args, **kwargs: opened.append(True))
         with tempfile.TemporaryDirectory() as folder:
@@ -135,6 +144,35 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIn("arm_tip", result["error"])
             self.assertEqual(opened, [])
+
+    def test_prefix_requires_a_fresh_matching_body_and_records_all_matches(self):
+        from .runner import Simulated
+
+        pose = (0, 0, 0, 0, 0, 0, 1)
+
+        class HardwareStub(Simulated):
+            def validate(self, table):
+                pass
+
+            def update(self, table, values, now, dt, end):
+                for name in ("arm_mid", "arm_joint_2", "other_body"):
+                    experiment.on_pose(now, time.time_ns(), "world", name, pose)
+                return super().update(table, values, now, dt, end)
+
+        with tempfile.TemporaryDirectory() as folder:
+            experiment = Experiments(folder, HardwareStub())
+            table = parse_table(EXAMPLE, "force", "N")
+            experiment.on_pose(time.monotonic(), time.time_ns(), "world", "other_body", pose)
+            run, = experiment.submit(table, EXAMPLE, "Bending", 1, body_prefix="arm_")
+            experiment.worker.join(timeout=5)
+            self.assertIn("prefix 'arm_'", experiment.get(run["id"])["error"])
+
+            experiment.on_pose(time.monotonic(), time.time_ns(), "world", "arm_mid", pose)
+            run, = experiment.submit(table, EXAMPLE, "Bending", 1, body_prefix="arm_")
+            experiment.worker.join(timeout=5)
+            self.assertEqual(experiment.get(run["id"])["status"], "complete")
+            with (Path(folder) / run["id"] / "poses.csv").open() as stream:
+                self.assertEqual({row["body"] for row in csv.DictReader(stream)}, {"arm_mid", "arm_joint_2"})
 
     def test_optional_webcam_download_on_completion_and_stop(self):
         def webcam(directory, *, filename):

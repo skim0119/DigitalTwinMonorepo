@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import json
+import os
 from functools import partial
 from pathlib import Path
 
@@ -26,7 +27,13 @@ def main():
     if args.camera_index < 0:
         parser.error("Camera index must be nonnegative.")
     try:
-        hardware = Hardware(Calibration.load(json.loads(args.calibration.read_text()))) if args.calibration else None
+        hardware = None
+        if args.calibration:
+            from control_core import safety_limits
+
+            pins = Path(os.environ.get("SPIROB_PINS_CONFIG", "pins.json"))
+            limits = safety_limits(json.loads(pins.read_text()))
+            hardware = Hardware(Calibration.load(json.loads(args.calibration.read_text()), limits))
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(f"Invalid calibration: {error}")
     webcam = None

@@ -18,17 +18,19 @@ class Calibration:
     max_step_rate: float
 
     @classmethod
-    def load(cls, config):
+    def load(cls, config, limits):
         scales = tuple(float(value) for value in config["steps_per_mm"])
         travel = tuple(tuple(map(float, bounds)) for bounds in config["travel_mm"])
-        force, rate = float(config["max_force_kgf"]), float(config["max_step_rate"])
+        force_limit, rate_limit = limits
+        force = float(config.get("max_force_kgf", force_limit))
+        rate = float(config.get("max_step_rate", rate_limit))
         if len(scales) != 6 or not all(math.isfinite(x) and x != 0 for x in scales):
             raise ValueError("Supply six signed, nonzero steps_per_mm calibrations.")
         if len(travel) != 6 or any(len(x) != 2 or not all(map(math.isfinite, x))
                                     or not x[0] <= 0 <= x[1] or x[0] == x[1] for x in travel):
             raise ValueError("Supply six finite travel ranges that contain zero.")
-        if not math.isfinite(force) or not math.isfinite(rate) or not (0 < force and 0 < rate <= 2133):
-            raise ValueError("Supply positive verified tension and step-rate limits.")
+        if not (0 < force <= force_limit and 0 < rate <= rate_limit):
+            raise ValueError("Calibration limits must be positive and within the global force and step-rate limits.")
         for scale, bounds in zip(scales, travel):
             low, high = sorted(value * scale for value in bounds)
             if not -2**31 <= low < high < 2**31 or math.ceil(low) >= math.floor(high):

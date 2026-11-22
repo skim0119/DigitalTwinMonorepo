@@ -23,7 +23,8 @@ using the IPv4 address of the machine running `cargo run`. The dashboard
 listens on all IPv4 interfaces, and any client that can reach the port can
 view readings and adjust GPIO smoothing.
 
-After editing the dashboard, rerun `make dashboard` and restart the monitor.
+The browser polls every 50 ms by default. Change `dashboard_poll_ms` in
+[pins.json](../pins.json), then rerun `make dashboard` and restart the monitor.
 If Homebrew's Rust comes first on your PATH, run `RUSTC="$(rustup which rustc)" make dashboard`
 to build with the toolchain that has the WebAssembly target.
 
