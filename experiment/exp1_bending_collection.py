@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime
