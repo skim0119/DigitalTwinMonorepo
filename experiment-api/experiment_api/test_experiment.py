@@ -37,6 +37,27 @@ class TableTest(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, "global"):
                 Calibration.load({**calibration, **overrides}, limits)
 
+    def test_force_only_uses_configured_limits(self):
+        limits = (4.5, 3000)
+        config = Calibration.force_only({"max_tightening_steps": 120}, limits)
+        with self.assertRaisesRegex(ValueError, "max_tightening_steps"):
+            Calibration.force_only({}, limits)
+        with self.assertRaisesRegex(ValueError, "calibration file"):
+            config.validate(parse_table(EXAMPLE, "displacement", "mm"))
+
+        def open_controller(path, bounds, **options):
+            self.assertEqual(bounds, [(-120, 120)] * 6)
+            self.assertEqual(options["max_tightening_steps"], 120)
+            self.assertEqual((options["max_force"], options["max_rate"]), limits)
+            return object()
+
+        table = parse_table(EXAMPLE, "force", "kgf")
+        hardware = Hardware(config, open_controller=open_controller)
+        hardware.validate(table)
+        cancelled = threading.Event()
+        cancelled.set()
+        hardware.open(table, cancelled)
+
     def test_hardware_unit_and_speed_contract(self):
         config = Calibration.load(dict(steps_per_mm=[-2, 2, 2, 2, 2, 2],
                                       travel_mm=[[0, 20]] * 6, max_force_kgf=1, max_step_rate=100), (4.5, 3000))

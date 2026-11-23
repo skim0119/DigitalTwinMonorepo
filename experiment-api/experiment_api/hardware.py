@@ -16,6 +16,7 @@ class Calibration:
     travel_mm: tuple
     max_force_kgf: float
     max_step_rate: float
+    step_limit: int | None = None
 
     @classmethod
     def load(cls, config, limits):
@@ -37,11 +38,20 @@ class Calibration:
                 raise ValueError("Each calibrated range must cover at least one full motor step.")
         return cls(scales, travel, force, rate)
 
+    @classmethod
+    def force_only(cls, settings, limits):
+        steps = settings.get("max_tightening_steps")
+        if type(steps) is not int or not 0 < steps < 2**31:
+            raise ValueError("Force-only mode requires a positive max_tightening_steps in pins.json.")
+        return cls((), (), *limits, step_limit=steps)
+
     def validate(self, table):
         if table.mode == "force":
             if max(map(max, table.values)) / (GRAVITY if table.unit == "N" else 1) >= self.max_force_kgf:
                 raise ValueError("A force command meets or exceeds the configured tension limit.")
             return
+        if self.step_limit is not None:
+            raise ValueError("Live displacement trials require a calibration file.")
         if any(table.values[0]) or any(table.values[-1]):
             raise ValueError("Live displacement trials must start and end at the zero reference.")
         for i, (low, high) in enumerate(self.travel_mm):
@@ -74,15 +84,20 @@ class Hardware:
             from control_core import open_controller
             self.open_controller = open_controller
         config = self.calibration
-        self.bounds = [
-            (math.ceil(low), math.floor(high))
-            for low, high in (sorted(x * scale for x in travel)
-                              for travel, scale in zip(config.travel_mm, config.steps_per_mm))
-        ]
+        if config.step_limit is not None:
+            limit = config.step_limit
+            self.bounds = [(-limit, limit)] * 6
+        else:
+            self.bounds = [
+                (math.ceil(low), math.floor(high))
+                for low, high in (sorted(x * scale for x in travel)
+                                  for travel, scale in zip(config.travel_mm, config.steps_per_mm))
+            ]
         self.controller = self.open_controller(
             Path(os.environ.get("SPIROB_PINS_CONFIG", "pins.json")), self.bounds,
             port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
             max_force=config.max_force_kgf, max_rate=config.max_step_rate,
+            max_tightening_steps=config.step_limit or 0,
         )
         self.wait_ready(cancel)
 

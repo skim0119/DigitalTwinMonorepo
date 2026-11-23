@@ -18,6 +18,8 @@ def main():
     parser = argparse.ArgumentParser(description="Spirob Experiment API")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--simulate", action="store_true")
+    mode.add_argument("--force-only", action="store_true",
+                      help="Enable hardware force control using the configured motor step limits")
     mode.add_argument("--calibration", type=Path, help="Enable hardware using a verified calibration JSON")
     parser.add_argument("--data", type=Path, default=Path.home() / "spirob-experiments")
     parser.add_argument("--port", type=int, default=5052)
@@ -28,14 +30,17 @@ def main():
         parser.error("Camera index must be nonnegative.")
     try:
         hardware = None
-        if args.calibration:
+        if args.calibration or args.force_only:
             from control_core import safety_limits
 
             pins = Path(os.environ.get("SPIROB_PINS_CONFIG", "pins.json"))
-            limits = safety_limits(json.loads(pins.read_text()))
-            hardware = Hardware(Calibration.load(json.loads(args.calibration.read_text()), limits))
+            settings = json.loads(pins.read_text())
+            limits = safety_limits(settings)
+            calibration = (Calibration.force_only(settings, limits) if args.force_only else
+                           Calibration.load(json.loads(args.calibration.read_text()), limits))
+            hardware = Hardware(calibration)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        parser.error(f"Invalid calibration: {error}")
+        parser.error(f"Invalid hardware configuration: {error}")
     webcam = None
     if hardware and not args.no_webcam:
         webcam = partial(start_recording, camera_index=args.camera_index)

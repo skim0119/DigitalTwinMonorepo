@@ -30,7 +30,7 @@ source ~/ros2_spirob_ws/install/setup.bash
 python3 -m venv --system-site-packages .experiment-venv
 source .experiment-venv/bin/activate
 pip install ./control_core ./experiment-api
-experiment-api --calibration /path/to/verified-calibration.json --data ~/spirob-experiments
+experiment-api --force-only --data ~/spirob-experiments
 ```
 
 Run from the repository root or set `SPIROB_PINS_CONFIG` to the absolute path to
@@ -39,6 +39,12 @@ the updated GPIO streamer. The native controller uses the
 streamer's `hx711-fast` UDP endpoint. Stop other motor controllers and
 load-cell readers before operating. Match `SPIROB_MONITOR_PORT` to the
 streamer's port if it differs from 5050.
+
+Force-only mode uses the configured force, speed, and `max_tightening_steps`
+limits in `pins.json`. It uses that step limit as a symmetric bound around
+the starting reference and as the cumulative tightening limit per trial.
+For live displacement control, start the service manually with
+`--calibration /path/to/verified-calibration.json`.
 
 A calibration JSON must have six signed, nonzero `steps_per_mm` values, six
 `travel_mm` pairs containing zero. Force and speed default to the global limits
@@ -135,8 +141,8 @@ The systemd units in `deploy/` start the GPIO streamer, the headless ROS 2
 `/poses` publisher, and Experiment API at power-on. They assume the checkout
 is at `~/spirob_py_code`, the ROS workspace is at `~/ros2_spirob_ws`, and
 the API is installed in `~/spirob_py_code/.experiment-venv` as above.
-Build the streamer with `make -C stream-gpio` and place the verified calibration
-at `~/.config/spirob/calibration.json`. Stop any manually started streamer,
+Build the streamer with `make -C stream-gpio`. The unit starts in force-only
+mode using `pins.json`. Stop any manually started streamer,
 mocap publisher, or Experiment API before bringing up the units.
 
 From the repository root on the Pi, install and enable the units once.

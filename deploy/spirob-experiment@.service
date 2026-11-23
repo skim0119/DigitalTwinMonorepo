@@ -6,7 +6,7 @@ After=spirob-gpio@%i.service spirob-mocap@%i.service
 [Service]
 User=%i
 WorkingDirectory=/home/%i/spirob_py_code
-ExecStart=/bin/bash -c 'source /home/%i/ros2_spirob_ws/install/setup.bash && exec .experiment-venv/bin/experiment-api --calibration /home/%i/.config/spirob/calibration.json'
+ExecStart=/bin/bash -c 'source /home/%i/ros2_spirob_ws/install/setup.bash && exec .experiment-venv/bin/experiment-api --force-only'
 Restart=on-failure
 RestartSec=5s
 
