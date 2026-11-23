@@ -245,3 +245,5 @@ __marimo__/
 # Local sync scripts
 /push
 /pull
+
+/output_postprocessed/

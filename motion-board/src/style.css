@@ -135,3 +135,7 @@ button.view-reset{right:.8rem;font-size:.8rem}
  aside{max-height:min(21rem,45vh)}
  .local-recordings{max-height:10rem}
 }
+
+.local-library{margin-top:.8rem}
+.review-note{font-size:.8rem;line-height:1.5;margin-bottom:.7rem}
+.top p{font-size:.8rem}

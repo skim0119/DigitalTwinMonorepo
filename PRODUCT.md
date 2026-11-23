@@ -1,5 +1,5 @@
 # Motion Board
 
-Spirob researchers upload tendon command tables, run physical trials, and compare measured motion across repeats. A linked 3D trajectory and timeline are the primary review tools. Raw data stays available for independent analysis, and annotations record cleanup decisions.
+Spirob researchers inspect saved experiment recordings and compare measured motion across repeats. A linked 3D trajectory and timeline are the primary review tools. Researchers can clean samples and export reviewed data while preserving the original recordings.
 
-The console uses a local browser and an SSH connection to the Raspberry Pi. The Pi owns actuation, timing, recording, and conversion from ROS 2 messages.
+The board runs locally in a browser and reads experiment output from a local folder or an imported bending CSV. Experiments are run separately through scripts.
