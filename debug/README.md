@@ -1,9 +1,10 @@
 # Debug tools
 
-From the repository root, install the debug scripts' Python dependencies in your active environment:
+From the repository root, install the debug scripts' dependencies in the shared `.venv`:
 
 ```sh
-python3 -m pip install ./control_core -r debug/requirements.txt
+make install
+source .venv/bin/activate
 ```
 
 The PID tuner also needs a Raspberry Pi with the HX711 streamer running.
@@ -30,7 +31,7 @@ With the Pi's HX711 streamer running, install the current native controller
 in the active Python environment:
 
 ```sh
-python3 -m pip install ./control_core
+make install
 ```
 
 **One-shot tuning trial.** Run a timed trial with the configured gains, or
