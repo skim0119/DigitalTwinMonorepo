@@ -36,18 +36,24 @@ def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2, p
                 progress = min(1, step * step_size / distance)
             levels.append(tuple(float(a + (b - a) * progress) for a, b in zip(start, end)))
 
+    timed_levels = ((tick * dwell, level) for tick, level in enumerate(levels * cycles + [levels[-1]]))
+    return force_table(tendons, timed_levels, pretension_kgf=pretension_kgf), level_count * dwell
+
+
+def force_table(tendons, timed_levels, *, pretension_kgf=PRETENSION_KGF):
+    """Encode timestamped force levels with preload on inactive tendons."""
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
     writer.writerow(("time_s", *TENDONS))
-    for tick, level in enumerate(levels * cycles + [levels[-1]]):
+    for elapsed, level in timed_levels:
         values = [pretension_kgf] * len(TENDONS)
         for tendon, force in zip(tendons, level):
             values[tendon] = force
-        writer.writerow((tick * dwell, *values))
+        writer.writerow((elapsed, *values))
     raw = stream.getvalue().encode()
     if len(raw) > 256 * 1024:
         raise ValueError("The force table exceeds the trial table size limit.")
-    return raw, level_count * dwell
+    return raw
 
 
 def make_table(tendon, force, cycles, steps, dwell, *, step_kgf=0.2, single_mode=False):

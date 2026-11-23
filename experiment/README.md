@@ -1,8 +1,16 @@
+# SpiRob experiments
+
+| Experiment | Purpose |
+| --- | --- |
+| [Exp 1 · Single-tendon cycling](#exp-1-bending-collection) | Measure hysteresis and cycle-to-cycle shakedown under repeated loading and unloading. |
+| [Exp 2 · Two-tendon cycling](#exp-2-two-tendon-bending-collection) | Measure how two tendons interact when their loads overlap and release in sequence. |
+| [Exp 3 · Single-tendon creep and recovery](#exp-3-single-tendon-creep-and-recovery) | Fit an effective viscoelastic response for each motor and tendon channel at a fixed 10 s per leg. |
+
 ## Slack completion notifications
 
 On Spirob, put `SLACK_BOT_TOKEN` and `SLACK_CHANNEL` in the repository-root
 `.env`, which Git ignores. Use the channel ID watched by the Mac broker and
-a bot with `chat:write` and access to that channel. Both bending CLIs post
+a bot with `chat:write` and access to that channel. The experiment CLIs post
 automatically when Slack is configured. Install the updated `control_core` package on Spirob
 and use the Python environment with `python-dotenv` installed.
 
@@ -12,12 +20,12 @@ On the Mac, arm the pager before launching the experiment over SSH:
 broker pager --thread "$CODEX_THREAD_ID" --filter-string 'spirob-finished:'
 ```
 
-The pager wakes on the next matching completion from either bending CLI.
+The pager wakes on the next matching experiment completion.
 The CLI prints the completion token and exit status, then posts them to Slack along with the
 relative CSV path when available. Keep the SSH log to recover the result if
 Slack delivery fails. Notification failures preserve the experiment exit code.
 
-# Exp 1 bending collection
+## Exp 1 bending collection
 
 Run both collectors directly on Spirob. Use a Python environment with `control_core` and
 Matplotlib installed, and source the ROS 2 workspace if your shell has not
@@ -120,3 +128,80 @@ Both experiments generate their force tables with
 [`force_staircase`](quasi_static.py). The trial runner holds each table
 row until the next timestamp. The dwell is time-based, so choose it based on
 the measured settling time.
+
+
+## Exp 3 single-tendon creep and recovery
+
+Run this directly on SpiRob with the same GPIO and mocap services. Exp 3
+requires fresh `arm_base` and `arm_tip` poses. Start each repeat from the same
+preparation and rest history. Keep the arm untouched during the recorded
+recovery.
+
+```sh
+.venv/bin/python -m experiment.exp3_creep_recovery -N 0 -F 1.0 --name T0_rep1
+```
+
+Each run changes the target for one motor, selected by `-N 0` through `-N 5`.
+The five other tendons retain a 0.10 kgf target. The active tendon starts and
+finishes at 0.10 kgf. Both legs are fixed at 10 seconds, with 25 force
+setpoint intervals of 0.40 seconds per leg. Use the same peak target across motors
+for comparable nominal ramp slopes. At the default 1.0 kgf peak, the slope
+magnitude is 0.09 kgf/s.
+
+| Phase | Default duration |
+| --- | ---: |
+| Preload baseline | 20 s |
+| Loading leg | 10 s |
+| Peak hold | 30 s |
+| Unloading leg | 10 s |
+| Recovery at preload | 60 s |
+
+The table holds the force at the midpoint of each ramp interval, and
+commands the exact peak and preload at the respective leg endpoints. For a longer response, use `--profile fit` for a 530 s run with
+a 30 s baseline, 180 s peak hold, and 300 s recovery.
+The overall limit is 600 s. If omitted, the run name includes the tendon,
+such as `exp3_<timestamp>_tendon_1`.
+
+Fit the model separately for each channel using the measured tension history in
+`controls.csv` and the base-relative motion from `poses.csv`. Keep
+`actuation.csv` with the recording so the nominal forcing and measured
+forcing can both be replayed. The fitted parameters describe the assembled
+motor, tendon, and backbone response over the tested force range and
+10 s/leg protocol. For later validation, freeze the fitted parameters and
+predict a held-out sequence with staggered and overlapping tendon loads.
+Exp 2's overlap pattern is a starting point for that sequence. Use the same
+preload, force range, and 10 s ramp duration as in Exp 3.
+
+### Exp 3 command sheet
+
+Prepare the arm, start one GPIO/HX711 streamer and one mocap bridge, and
+source the ROS workspace on SpiRob. Copy **one trial line at a time** from
+[the Exp 3 command sheet](exp3_batch.sh). Each motor has one 130 s pilot
+and three 530 s fitting repeats. Calibrate, home, or review the pilot between
+commands as needed.
+
+Pilot results go under `output/experiment/exp3_pilot/T0/`. Fitting repeats
+go under `output/experiment/exp3_fit/T0/rep_1/` and the corresponding
+folders for the other motors and repeats. Each trial writes its own
+timestamped CSV and raw bundle.
+
+### Model-fitting CSVs from Exp 1
+
+From the checkout that holds the raw recordings:
+
+```sh
+.venv/bin/python -m experiment.postprocess_hysteresis
+```
+
+The exporter reads local single-tendon Exp 1 bundles and writes one CSV per
+complete cycle under `output_postprocessed/tendon_N/<trial>/<run_id>/`.
+It keeps earlier complete cycles from interrupted trials, with the original
+run status in every file and in `manifest.csv`. Cycles with a gap greater
+than 0.25 s in the aligned data are excluded. A force sample must precede
+the pose by at most 0.10 s.
+
+Poses are relative to the matching `arm_base` pose in the same mocap frame.
+Each row retains trial elapsed time, measured force, and the original cycle
+number. The pose origin is shared across cycles so residual bending and
+shakedown remain visible. Fit consecutive cycles with their loading history
+when estimating a memory-dependent model.
