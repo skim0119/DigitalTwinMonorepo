@@ -18,6 +18,9 @@ OUTPUT_DIR = DEFAULT_CONFIG.parent / "output"
 TELEMETRY_INTERVAL = 0.065
 
 
+TERMINAL_IDLE_S = 5.0
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     selection = parser.add_mutually_exclusive_group()
@@ -27,6 +30,8 @@ def parse_args():
                            help="Run all other motors and ignore this motor’s HX711.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Use an alternate pins.json-format file.")
+    parser.add_argument("--terminal", action="store_true",
+                        help="Stop after five seconds without motor activity.")
     return parser.parse_args()
 
 
@@ -104,7 +109,7 @@ def save_combined_plot(channels, plot_path):
     print(f"Saved plot to {plot_path}")
 
 
-def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DEFAULT_CONFIG):
+def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DEFAULT_CONFIG, terminal=False):
     from control_core import open_controller, safety_limits
 
     if motor is not None and motor not in range(6):
@@ -153,6 +158,7 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
         "target_kg": target,
         "setpoint_schedule_kg": schedule,
         "duration_s": duration_s,
+        "terminal": terminal,
         "max_tension_kg": tension_limit,
         "max_tightening_steps": tightening_limit,
         "max_step_rate": max_rate,
@@ -179,9 +185,12 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
         start = time.monotonic()
         end = math.inf if duration_s is None else start + duration_s
         last_print = start
+        idle_since = start
+        previous_steps = None
         while (now := time.monotonic()) < end:
             elapsed = now - start
-            target = schedule[min(int(elapsed / hold_s), len(schedule) - 1)]
+            phase = min(int(elapsed / hold_s), len(schedule) - 1)
+            target = schedule[phase]
             if target != targets[selected[0]]:
                 for index in selected:
                     targets[index] = target
@@ -194,6 +203,15 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
                 channel.log_measured.append(force)
                 channel.log_setpoints.append(target)
                 channel.log_outputs.append(speed)
+            if terminal and phase == len(schedule) - 1:
+                motion = controller.status()
+                steps = tuple(motion[index][1] for index in selected)
+                if steps != previous_steps or any(motion[index][2] != 0 for index in selected):
+                    idle_since = now
+                previous_steps = steps
+                if now - idle_since >= TERMINAL_IDLE_S:
+                    print("No motor activity for 5 seconds, stopping.")
+                    break
             if now - last_print >= 0.2:
                 print("  |  ".join(
                     f"{channel.name}: force={channel.log_measured[-1]:.3f}kg "
@@ -222,4 +240,4 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.motor, skip_motor=args.skip_motor, config=args.config)
+    main(args.motor, skip_motor=args.skip_motor, config=args.config, terminal=args.terminal)
