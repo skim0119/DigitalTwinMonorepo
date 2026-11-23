@@ -241,8 +241,12 @@ def main():
     parser.add_argument("--max-tension-kg", type=positive_float, default=4.5)
     parser.add_argument("--known-tendon", type=int, choices=range(1, 7),
                         help="Use a previously measured inward tendon for pulses of up to 2 s.")
-    parser.add_argument("--tip-axis", choices=("x", "y", "z"),
-                        help="Enable angle homing with this calibrated local arm_tip axis.")
+    orientation = parser.add_mutually_exclusive_group()
+    orientation.add_argument("--tip-axis", choices=("x", "y", "z"),
+                             help="Calibrated local arm_tip axis for tilt correction (default: z).")
+    orientation.add_argument("--position-only", dest="tip_axis", action="store_const", const=None,
+                             help="Home tip position only.")
+    parser.set_defaults(tip_axis="z")
     parser.add_argument("--tilt-tol-deg", type=positive_float, default=2.0)
     args = parser.parse_args()
     tilt_tol_deg = args.tilt_tol_deg if args.tip_axis else None
