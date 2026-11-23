@@ -6,7 +6,7 @@ usage() {
     cat <<'HELP'
 Usage: ./exp1_local.sh [--dry-run]
 
-Run ten 10 kgf cycles at each leg duration from 5 through 13 seconds.
+Run ten 1.0 kgf cycles at each leg duration from 5 through 13 seconds.
 SPIROB_API_URL defaults to http://127.0.0.1:5052.
 SPIROB_TENDON defaults to 0 (zero-based).
 The Experiment API must support POST /home for live sweeps.
@@ -42,11 +42,11 @@ fi
 
 run_trial() {
     local leg=$1 dwell
-    # Fifty increments per leg gives 0.2 kgf steps.
+    # Use fifty increments per leg to preserve the scheduled ramp time.
     dwell=$(printf '0.%02d' "$((leg * 100 / steps))")
     printf 'Running Exp 1 at %s s/leg\n' "$leg"
     python3 "$project_dir/experiment/exp1_bending_through_api.py" \
-        --api-url "$SPIROB_API_URL" -N "$tendon" -F 10 -C 10 \
+        --api-url "$SPIROB_API_URL" -N "$tendon" -F 1.0 -C 10 \
         --steps "$steps" --dwell-s "$dwell" --name "exp1_leg_${leg}s" \
         ${dry_flag:+"$dry_flag"}
 }
