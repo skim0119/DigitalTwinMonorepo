@@ -175,12 +175,11 @@ preload, force range, and 10 s ramp duration as in Exp 3.
 
 Prepare the arm, start one GPIO/HX711 streamer and one mocap bridge, and
 source the ROS workspace on SpiRob. Copy **one trial line at a time** from
-[the Exp 3 command sheet](exp3_batch.sh). Each motor has three 530 s fitting
-repeats. Calibrate or home between commands as needed.
+[the Exp 3 command sheet](exp3_batch.sh). It lists four 530 s trials on T0:
+two at 1.0 kgf and two at 2.5 kgf. Run the reset line between trials.
 
-Fitting repeats go under `output/experiment/exp3_fit/T0/rep_1/` and the corresponding
-folders for the other motors and repeats. Each trial writes its own
-timestamped CSV and raw bundle.
+Each trial writes a timestamped CSV and raw bundle under
+`output/experiment/exp3_fit/T0/<force>/rep_<number>/`.
 
 ### Model-fitting CSVs from Exp 1
 
