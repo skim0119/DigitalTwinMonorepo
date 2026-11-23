@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 .archify
+.DS_Store
+_Spirob_Code_bk
 
 *.txt
 !/control_core/CMakeLists.txt
@@ -239,3 +241,7 @@ __marimo__/
 
 # Local experiment results
 /output/
+
+# Local sync scripts
+/push
+/pull
