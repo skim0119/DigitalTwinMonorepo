@@ -5,7 +5,7 @@ use std::{
     net::{TcpListener, TcpStream},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tungstenite::{Message, accept};
+use tungstenite::{accept, Message};
 
 const ADDRESS: &str = "127.0.0.1:5051";
 const PERIOD: Duration = Duration::from_millis(50);
@@ -127,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(ADDRESS)?;
     let wiring = Wiring::read()?;
     let started = Instant::now();
-    println!("Simulated Spirob stream at ws://{ADDRESS}/ (Ctrl+C to stop)");
+    println!("Mock Pi GPIO stream at ws://{ADDRESS}/ (Ctrl+C to stop)");
     std::thread::scope(|scope| {
         for stream in listener.incoming() {
             let stream = stream?;
@@ -156,12 +156,10 @@ mod tests {
         assert_eq!(first.levels & (1 << pins.sck), 1 << pins.sck);
         assert_eq!(first.levels & (1 << pins.dir), 0);
         assert_eq!(later.levels & (1 << pins.dir), 1 << pins.dir);
-        assert!(
-            first
-                .hx711
-                .iter()
-                .zip(later.hx711)
-                .all(|(a, b)| a.kg != b.kg)
-        );
+        assert!(first
+            .hx711
+            .iter()
+            .zip(later.hx711)
+            .all(|(a, b)| a.kg != b.kg));
     }
 }
