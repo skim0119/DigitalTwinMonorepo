@@ -118,3 +118,34 @@ Both experiments generate their force tables with
 [`force_staircase`](quasi_static.py). The trial runner holds each table
 row until the next timestamp. The dwell is time-based, so choose it based on
 the measured settling time.
+
+## Run bending experiments from a local client through Experiment API
+
+With the Pi's Experiment API reachable over HTTP, run this from the local checkout:
+
+```sh
+python3 experiment/exp1_bending_through_api.py --api-url http://127.0.0.1:5052 \
+  -N 0 -F 2.5 -C 3 --step-kgf 0.2 --dwell-s 1
+
+python3 experiment/exp2_bending_through_api.py --api-url http://127.0.0.1:5052 \
+  -F 2.5 -C 3 --step-kgf 0.2 --dwell-s 1
+```
+
+Set `--api-url` to your forwarded or private API address. Add `--dry-run` to
+save the actuation CSV locally and validate it against the API before
+submitting a trial. A normal invocation starts a trial and confirms the
+mechanical reference to the API, so check the live zero and preload before
+running it. The local client needs only Python's standard library. It generates
+the same force staircase as its corresponding collector, with all cycles in a
+single actuation CSV and inactive tendons at 0.1 kgf. The server applies its
+configured limits and holds each row until the next timestamp.
+
+The client prints the trial ID, waits for terminal status, and saves the input
+table and exported run files under `output/experiment/exp1_api_*/` or `output/experiment/exp2_api_*/`. Failed
+or stopped trials also download the files available on the server.
+Interrupting the client ends local waiting. Use the API's stop endpoint to
+stop an active trial.
+
+To add another API-driven experiment, define its arguments and actuation table
+in its own script, then call `run_trial` from `experiment_client.py` with the
+table bytes, duration, mode, and unit.

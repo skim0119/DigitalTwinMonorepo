@@ -67,7 +67,8 @@ def create_app(experiments):
     @app.get("/health")
     def health():
         return {"simulated": experiments.simulated, "required_body_supported": True,
-                "required_body_prefix_supported": True, "run_name_supported": True}
+                "required_body_prefix_supported": True, "run_name_supported": True,
+                "homing_supported": experiments.homing is not None}
 
     @app.post("/validate")
     async def validate(request: Request, mode: str, unit: str):
@@ -92,6 +93,17 @@ def create_app(experiments):
                                            repeats, tuple(required_body), body_prefix=required_body_prefix, name=name)
         except BusyError as error:
             raise HTTPException(409, str(error)) from error
+
+    @app.post("/home")
+    def home():
+        if experiments.homing is None:
+            raise HTTPException(501, "Homing is unavailable on this API server.")
+        try:
+            return experiments.home()
+        except BusyError as error:
+            raise HTTPException(409, str(error)) from error
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.post("/runs/{run_id}/stop")
     def stop(run_id: str):

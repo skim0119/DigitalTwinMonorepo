@@ -73,26 +73,31 @@ class Hardware:
         self.open_controller = open_controller
         self.controller = None
         self.reference_valid = True
+        self.position_steps = (0,) * 6
+        self.force_home_verified = False
 
     def validate(self, table):
         self.calibration.validate(table)
 
-    def open(self, _table, cancel):
-        if not self.reference_valid:
-            raise RuntimeError("Re-establish the mechanical zero and restart Experiment API before another trial.")
+    def open(self, table, cancel):
+        if not self.reference_valid and not (table.mode == "force" and self.force_home_verified):
+            raise RuntimeError("Re-establish the mechanical zero, or verify homing before another force trial.")
+        self.open_at_position(cancel)
+
+    def open_at_position(self, cancel):
+        self.force_home_verified = False
         if self.open_controller is None:
             from control_core import open_controller
             self.open_controller = open_controller
         config = self.calibration
         if config.step_limit is not None:
             limit = config.step_limit
-            self.bounds = [(-limit, limit)] * 6
+            self.bounds = [(-limit - position, limit - position) for position in self.position_steps]
         else:
-            self.bounds = [
-                (math.ceil(low), math.floor(high))
-                for low, high in (sorted(x * scale for x in travel)
-                                  for travel, scale in zip(config.travel_mm, config.steps_per_mm))
-            ]
+            self.bounds = []
+            for travel, scale, position in zip(config.travel_mm, config.steps_per_mm, self.position_steps):
+                low, high = sorted(x * scale for x in travel)
+                self.bounds.append((math.ceil(low) - position, math.floor(high) - position))
         self.controller = self.open_controller(
             Path(os.environ.get("SPIROB_PINS_CONFIG", "pins.json")), self.bounds,
             port=int(os.environ.get("SPIROB_MONITOR_PORT", "5050")),
@@ -118,12 +123,16 @@ class Hardware:
         if remaining <= 0:
             return None
         self.controller.command(targets, table.mode == "force", min(0.15, remaining))
-        return self.controller.status()
+        return [(force, steps + origin, speed) for (force, steps, speed), origin
+                in zip(self.controller.status(), self.position_steps)]
 
     def finish(self):
         if self.controller:
             controller, self.controller = self.controller, None
             controller.stop()
-            self.reference_valid = all(steps == 0 for _, steps, _ in controller.status())
+            self.position_steps = tuple(
+                origin + steps for origin, (_, steps, _) in zip(self.position_steps, controller.status())
+            )
+            self.reference_valid = not any(self.position_steps)
 
     close = finish

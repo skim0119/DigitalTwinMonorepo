@@ -57,8 +57,10 @@ It has no independent absolute-position measurement.
 Before enabling the drivers, establish the mechanical zero and preload, and
 verify step direction, travel, and stop behavior on the Pi. The browser requires
 confirmation of the reference before a hardware batch starts. If a trial leaves
-any motor away from step zero, later trials in the batch cannot run. Re-establish
-zero and restart the service before submitting another batch. Stop cancels the
+any motor away from step zero, later trials in the batch cannot run. A
+successful API homing request can clear the gate for the next force trial
+while retaining the accumulated step positions and calibrated travel bounds.
+Displacement trials still require mechanical zero. Stop cancels the
 remaining trials and preserves the partial record. WebSocket disconnects do
 not interrupt an accepted trial. The local controller stops on stale feedback
 or an expired command.
@@ -89,6 +91,10 @@ playback. These semantics can be compared with the simulator when available.
   Add `required_body_prefix=arm_` to record matching bodies and require at least
   one fresh match throughout a live trial.
   Add `name=baseline` to append `_baseline` to each trial ID and recording folder.
+- `POST /home` runs position homing at a 1 mm tolerance and returns the result
+  and final measured tensions. It waits for completion, rejects requests during
+  another run, and is enabled on the Pi with `--homing-script debug/homing.py`.
+  The systemd unit supplies that option. `GET /health` reports `homing_supported`.
 - `GET /runs` lists trials. `POST /runs/{id}/stop` cancels the active batch.
 - `GET /runs/{id}/files/{name}?download=true` downloads the stored file.
 - `GET /runs/{id}/samples?kind=poses` returns pose rows. Use `kind=controls` for control rows.

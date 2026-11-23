@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = (0.1,) * 6
-MAX_RUN_S = 10.0
+MAX_RUN_S = 100.0
 SETTLE_S = 0.5
 FORCE_TOL_KGF = 0.02
 POSE_MAX_AGE_S = 0.25
@@ -117,22 +117,27 @@ def positive_float(value):
     return number
 
 
-def relative_pose(msg, axis_marker=None):
-    points = {body.name: body.pose.position for body in msg.poses}
-    if not {"arm_base", "arm_tip"} <= points.keys():
+def relative_pose(msg, tip_axis=None):
+    poses = {body.name: body.pose for body in msg.poses}
+    if not {"arm_base", "arm_tip"} <= poses.keys():
         return None
-    base, tip = points["arm_base"], points["arm_tip"]
+    base, tip = poses["arm_base"].position, poses["arm_tip"].position
     xyz = tuple(1000 * (getattr(tip, axis) - getattr(base, axis)) for axis in "xyz")
     if not all(math.isfinite(value) for value in xyz):
         return None
-    if axis_marker is None:
+    if tip_axis is None:
         return xyz
-    if axis_marker not in points:
+    q = poses["arm_tip"].orientation
+    norm = math.hypot(q.x, q.y, q.z, q.w)
+    if not math.isfinite(norm) or norm < 1e-6:
         return None
-    upstream = points[axis_marker]
-    dx, dy, dz = (getattr(tip, axis) - getattr(upstream, axis) for axis in "xyz")
-    if not all(math.isfinite(value) for value in (dx, dy, dz)) or math.hypot(dx, dy, dz) < 0.001:
-        return None
+    x, y, z, w = (component / norm for component in (q.x, q.y, q.z, q.w))
+    # Each column is one local tip axis expressed in the mocap frame.
+    dx, dy, dz = {
+        "x": (1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)),
+        "y": (2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)),
+        "z": (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)),
+    }[tip_axis]
     lateral = math.hypot(dx, dy)
     tilt = math.degrees(math.atan2(lateral, abs(dz)))
     # Project onto the +Z hemisphere so either vertical axis gives zero tilt.
@@ -236,13 +241,11 @@ def main():
     parser.add_argument("--max-tension-kg", type=positive_float, default=4.5)
     parser.add_argument("--known-tendon", type=int, choices=range(1, 7),
                         help="Use a previously measured inward tendon for pulses of up to 2 s.")
-    parser.add_argument("--tip-axis-marker",
-                        help="Tracked body immediately upstream of arm_tip. Enables angle homing.")
+    parser.add_argument("--tip-axis", choices=("x", "y", "z"),
+                        help="Enable angle homing with this calibrated local arm_tip axis.")
     parser.add_argument("--tilt-tol-deg", type=positive_float, default=2.0)
     args = parser.parse_args()
-    if args.tip_axis_marker in ("arm_base", "arm_tip"):
-        parser.error("Choose an independently tracked point near the tip.")
-    tilt_tol_deg = args.tilt_tol_deg if args.tip_axis_marker else None
+    tilt_tol_deg = args.tilt_tol_deg if args.tip_axis else None
     known_tendon = None if args.known_tendon is None else args.known_tendon - 1
 
     import rclpy
@@ -263,7 +266,7 @@ def main():
     def receive(msg):
         nonlocal pose, source_stamp
         stamp = (msg.header.stamp.sec, msg.header.stamp.nanosec)
-        xyz = relative_pose(msg, args.tip_axis_marker)
+        xyz = relative_pose(msg, args.tip_axis)
         if xyz is not None and (source_stamp is None or stamp > source_stamp):
             source_stamp = stamp
             pose = (time.monotonic(), xyz)
@@ -321,8 +324,7 @@ def main():
         print(f"Last sample at {stamp - (deadline - MAX_RUN_S):.2f} s")
     else:
         print("No complete mocap and load-cell measurements.")
-        if args.tip_axis_marker:
-            print(f"Angle homing requires {args.tip_axis_marker}, arm_tip, and arm_base in one frame.")
+        print("Homing requires arm_base and a valid arm_tip pose in one frame.")
     return 0 if result == "homed" else 1
 
 

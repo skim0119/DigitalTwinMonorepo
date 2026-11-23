@@ -12,27 +12,15 @@ from datetime import datetime
 from pathlib import Path
 
 if __package__:
-    from .quasi_static import PRETENSION_KGF, TENDONS, force_staircase
+    from .quasi_static import TENDONS, make_pair_table, make_table
 else:
-    from quasi_static import PRETENSION_KGF, TENDONS, force_staircase
+    from quasi_static import TENDONS, make_pair_table, make_table
 
 BODY_PREFIX = "arm_"
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = ("cycle", "elapsed_s", "ros_stamp_ns", "frame", "body",
           "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw",
           "tendon", "target_kgf", "load_kgf", "run_status", "simulated")
-
-
-def make_table(tendon, force, cycles, steps, dwell, *, step_kgf=0.2, single_mode=False):
-    return force_staircase(
-        (tendon,), ((0,), (force,), (0,)), cycles, steps, dwell,
-        step_kgf=step_kgf, pretension_kgf=0 if single_mode else PRETENSION_KGF,
-    )
-
-
-def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
-    waypoints = ((0, 0), (force, 0), (force, force), (0, force), (0, 0))
-    return force_staircase((0, 1), waypoints, cycles, steps, dwell, step_kgf=step_kgf)
 
 
 def export(path, run, poses, controls, tendons, cycle_duration, cycles):

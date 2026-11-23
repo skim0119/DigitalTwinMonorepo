@@ -24,12 +24,14 @@ def main():
     parser.add_argument("--data", type=Path, default=Path.home() / "spirob-experiments")
     parser.add_argument("--port", type=int, default=5052)
     parser.add_argument("--camera-index", type=int, default=0, help="Webcam device index")
+    parser.add_argument("--homing-script", type=Path, help="Path to the trusted debug/homing.py on the Pi")
     parser.add_argument("--no-webcam", action="store_true", help="Skip webcam recording")
     args = parser.parse_args()
     if args.camera_index < 0:
         parser.error("Camera index must be nonnegative.")
     try:
         hardware = None
+        homing = None
         if args.calibration or args.force_only:
             from control_core import safety_limits
 
@@ -39,6 +41,10 @@ def main():
             calibration = (Calibration.force_only(settings, limits) if args.force_only else
                            Calibration.load(json.loads(args.calibration.read_text()), limits))
             hardware = Hardware(calibration)
+            if args.homing_script:
+                from .homing_job import load_homing
+
+                homing = load_homing(args.homing_script)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(f"Invalid hardware configuration: {error}")
     webcam = None
@@ -53,7 +59,7 @@ def main():
             fcntl.flock(data_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error(f"Experiment API already owns {args.data} or the hardware.")
-        uvicorn.run(create_app(Experiments(args.data, hardware, webcam=webcam)), host="127.0.0.1", port=args.port)
+        uvicorn.run(create_app(Experiments(args.data, hardware, webcam=webcam, homing=homing)), host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":

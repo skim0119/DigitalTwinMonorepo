@@ -48,3 +48,17 @@ def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2, p
     if len(raw) > 256 * 1024:
         raise ValueError("The force table exceeds the API upload limit.")
     return raw, level_count * dwell
+
+
+def make_table(tendon, force, cycles, steps, dwell, *, step_kgf=0.2, single_mode=False):
+    """Build Exp 1 cycles with one active tendon."""
+    return force_staircase(
+        (tendon,), ((0,), (force,), (0,)), cycles, steps, dwell,
+        step_kgf=step_kgf, pretension_kgf=0 if single_mode else PRETENSION_KGF,
+    )
+
+
+def make_pair_table(force, cycles, steps, dwell, *, step_kgf=0.2):
+    """Build Exp 2 cycles with the four T0 and T1 loading phases."""
+    waypoints = ((0, 0), (force, 0), (force, force), (0, force), (0, 0))
+    return force_staircase((0, 1), waypoints, cycles, steps, dwell, step_kgf=step_kgf)
