@@ -1,16 +1,22 @@
 # Motion Board
 
-A local TypeScript console for Spirob actuation experiments. Start
-[Experiment API](../experiment-api/README.md) on Spirob first.
+A local console for reviewing Spirob actuation experiments. To browse saved recordings:
 
 ```sh
 npm ci
 npm run build
-npm start -- --ssh spirob
+npm start
 ```
 
-Open [Motion Board on port 8082](http://127.0.0.1:8082). The launcher uses the
-existing OpenSSH host alias and forwards HTTP and WebSocket requests to the
+Open [Motion Board on port 8082](http://127.0.0.1:8082). **Local results** scans
+the checkout’s `output/` directory, including nested folders, for downloaded API
+run bundles and combined Exp 1 or Exp 2 recordings. Choose a recording to load its
+poses and controls. Use **Refresh** to find new files or start with
+`npm start -- --output-dir /path/to/recordings` to open another directory.
+
+For live operation, start [Experiment API](../experiment-api/README.md) on
+Spirob, then launch with `npm start -- --ssh spirob` and choose **Experiment API**.
+The launcher uses the existing OpenSSH host alias and forwards HTTP and WebSocket requests to the
 Pi's loopback port. Start with `npm start` if Experiment API is running on
 this computer, such as during simulation. Use `--port`, `--api-port`, or `--forward-port` to override the defaults.
 The default SSH tunnel binds locally on port 15052.

@@ -4,6 +4,8 @@ import { createRoot } from 'react-dom/client';
 import { active, average, defaultReview, exportCsv, reviewed, sampleDeletions } from './review';
 import type { Action, Control, Point, Pose, Review, Run, Table } from './review';
 import { readBendingCsv } from './bending';
+import { listLocalResults, localFile, openLocalResult } from './local-results';
+import type { LocalResult } from './local-results';
 import { Trajectory } from './trajectory';
 import type { Trace } from './trajectory';
 import './style.css';
@@ -34,6 +36,16 @@ function App() {
   const [liveRuns, setRuns] = useState<Run[]>([]);
   const [importedRuns, setImportedRuns] = useState<Run[]>([]);
   const runs = [...importedRuns, ...liveRuns];
+  const [source, setSource] = useState<'local' | 'live'>('local');
+  const [localResults, setLocalResults] = useState<LocalResult[]>([]);
+  const [localLoading, setLocalLoading] = useState(true);
+  const [localError, setLocalError] = useState('');
+  const [localQuery, setLocalQuery] = useState('');
+  const [openedResults, setOpenedResults] = useState<Record<string, LocalResult>>({});
+  const [openingResult, setOpeningResult] = useState('');
+  const localMatches = localResults.filter(result =>
+    `${result.label} ${result.path}`.toLowerCase().includes(localQuery.trim().toLowerCase()));
+  const visibleRuns = source === 'live' ? liveRuns : importedRuns;
   const [selected, setSelected] = useState<string[]>([]);
   const [focus, setFocus] = useState('');
   const [poses, setPoses] = useState<Record<string, Pose[]>>({});
@@ -65,6 +77,13 @@ function App() {
 
   const report = (reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason));
   const refresh = () => api<Run[]>('/runs').then(setRuns);
+  async function refreshLocal() {
+    setLocalLoading(true); setLocalError('');
+    try { setLocalResults(await listLocalResults()); }
+    catch (reason) { setLocalError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setLocalLoading(false); }
+  }
+  useEffect(() => { void refreshLocal(); }, []);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -130,6 +149,7 @@ function App() {
   }, [archiveKey, online]);
 
   const current = runs.find(run => run.id === focus);
+  const openResult = current && (openedResults[current.id] ?? openedResults[current.batch]);
   const imported = importedRuns.some(run => run.id === focus);
   const busy = liveRuns.find(run => run.status === 'running' || run.status === 'stopping') ?? liveRuns.find(active);
   const focusPoses = poses[focus] ?? emptyPoses;
@@ -179,20 +199,37 @@ function App() {
 
   function choose(run: Run) {
     setPicking(false); setSamples(new Set());
-    setFocus(run.id); setCursor(0); setFollow(true); setStart(undefined); setEnd(undefined);
+    setFocus(run.id); setBody(''); setCursor(0); setFollow(true); setStart(undefined); setEnd(undefined);
     setSelected(ids => ids.includes(run.id) ? ids : [...ids, run.id]);
+  }
+  function showRecords(records: Awaited<ReturnType<typeof openLocalResult>>) {
+    const ids = records.map(record => record.run.id);
+    setImportedRuns(previous => [...records.map(record => record.run), ...previous.filter(run => !ids.includes(run.id))]);
+    setPoses(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.poses])) }));
+    setControls(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.controls])) }));
+    choose(records[0].run);
+    setSelected(ids);
+    const ranges = new Map<string, [number, number]>();
+    for (const [, name, command] of records[0].controls) {
+      const [low, high] = ranges.get(name) ?? [command, command];
+      ranges.set(name, [Math.min(low, command), Math.max(high, command)]);
+    }
+    const [mostActive] = [...ranges].sort(([, a], [, b]) => (b[1] - b[0]) - (a[1] - a[0]));
+    setTendon(mostActive?.[0] ?? 'tendon_1');
+  }
+  async function openRecording(entry: LocalResult) {
+    setOpeningResult(entry.id); setLocalError('');
+    try {
+      showRecords(await openLocalResult(entry));
+      setOpenedResults(previous => ({ ...previous, [entry.id]: entry }));
+    } catch (reason) { setLocalError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setOpeningResult(''); }
   }
   async function importBending(file: File) {
     try {
       const batch = crypto.randomUUID().replaceAll('-', '');
-      const records = readBendingCsv(await file.text(), file.name, batch, new Date(file.lastModified).toISOString());
-      setImportedRuns(previous => [...records.map(record => record.run), ...previous]);
-      setPoses(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.poses])) }));
-      setControls(previous => ({ ...previous, ...Object.fromEntries(records.map(record => [record.run.id, record.controls])) }));
-      choose(records[0].run);
-      setSelected(records.map(record => record.run.id));
-      setBody('');
-      setTendon(records[0].controls[0]?.[1] ?? 'tendon_1');
+      showRecords(readBendingCsv(await file.text(), file.name, batch, new Date(file.lastModified).toISOString()));
+      setSource('local');
       setError('');
     } catch (error) { report(error); }
   }
@@ -209,6 +246,7 @@ function App() {
         query.set('reference_ready', String(confirmed));
         const started = await api<Run[]>('/runs?' + query, { method: 'POST', body: raw });
         setRuns(previous => [...started, ...previous.filter(run => !started.some(next => next.id === run.id))]);
+        setSource('live');
         setSelected([started[0].id]);
         choose(started[0]);
         showForm(false); confirm(false);
@@ -252,19 +290,45 @@ function App() {
 
   return <>
     <header className="top"><h1>Motion Board</h1>
-      <div className="top-actions"><span role="status" className={online ? 'connection online' : 'connection offline'}>{online ? simulated ? 'Simulation' : 'Pi connected' : 'Disconnected'}</span>
+      <div className="top-actions"><span role="status" className={online ? 'connection online' : 'connection offline'}>{online ? simulated ? 'Simulation' : 'Pi connected' : 'API offline'}</span>
       <button className="primary" onClick={() => showForm(!form)}>{form ? 'Close setup' : 'New experiment'}</button></div></header>
     {error && <p className="error" role="alert">{error}</p>}
     <div className="workspace">
-      <aside><h2>Runs <small>{runs.length}</small></h2>
-        <label className="file">Import bending CSV<input type="file" accept=".csv,text/csv" onChange={e => {
-          const file = e.currentTarget.files?.[0];
-          e.currentTarget.value = '';
-          if (file) void importBending(file);
-        }} /></label>
-        {runs.length === 0 && <p>{online ? 'Upload an actuation table to record your first trial.' : 'Waiting for Experiment API.'}</p>}
-        {[...new Set(runs.map(run => run.batch))].map(batch => {
-          const children = runs.filter(run => run.batch === batch).sort((a, b) => a.trial - b.trial);
+      <aside><h2>Runs</h2>
+        <div className="run-sources" role="group" aria-label="Run source">
+          <button type="button" aria-pressed={source === 'local'} onClick={() => setSource('local')}>Local results</button>
+          <button type="button" aria-pressed={source === 'live'} onClick={() => setSource('live')}>Experiment API</button>
+        </div>
+        {source === 'local' && <div className="local-library">
+          <div className="local-search">
+            <input type="search" aria-label="Filter local recordings" placeholder="Filter recordings"
+              value={localQuery} onChange={event => setLocalQuery(event.target.value)} />
+            <button type="button" onClick={() => void refreshLocal()} disabled={localLoading}>Refresh</button>
+          </div>
+          {localError && <p className="local-message" role="alert">{localError}</p>}
+          <p className="local-count" role="status">{localLoading ? 'Scanning local output…' :
+            `${localMatches.length} ${localMatches.length === 1 ? 'recording' : 'recordings'}`}</p>
+          {!localLoading && !localMatches.length && !localError && <p className="local-message">
+            {localQuery ? 'No recordings match your filter.' : 'No matching recordings in the local output folder.'}</p>}
+          {localMatches.length > 0 && <ul className="local-recordings" aria-label="Local recordings">
+            {localMatches.map(entry => <li key={entry.id}>
+              <button type="button" aria-current={entry.id === openResult?.id ? 'true' : undefined}
+                disabled={!!openingResult} title={entry.path} onClick={() => void openRecording(entry)}>
+                <span>{entry.label}</span>
+                <small>{entry.kind === 'bundle' ? 'API run' : 'Bending CSV'} · {new Date(entry.created).toLocaleDateString()}</small>
+                {openingResult === entry.id && <small role="status">Opening…</small>}
+              </button>
+            </li>)}
+          </ul>}
+          <label className="file local-import">Import bending CSV<input type="file" accept=".csv,text/csv" onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (file) void importBending(file);
+          }} /></label>
+        </div>}
+        {source === 'live' && visibleRuns.length === 0 && <p>{online ? 'Upload an actuation table to record your first trial.' : 'Experiment API is disconnected.'}</p>}
+        {[...new Set(visibleRuns.map(run => run.batch))].map(batch => {
+          const children = visibleRuns.filter(run => run.batch === batch).sort((a, b) => a.trial - b.trial);
           const first = children[0];
           return <section key={batch} className="batch">
             <h3>{first.label}</h3><p>{first.table.mode} · {first.table.unit} · {new Date(first.created).toLocaleString()}</p>
@@ -325,7 +389,9 @@ function App() {
           }
         }}>
           <div className="workhead"><div><h2>{current ? `${current.label} · Trial ${current.trial}` : 'Pose trajectory'}</h2>
-            <p>{current?.error ?? (current ? `${current.status[0].toUpperCase() + current.status.slice(1)} · ${seconds(current.table.duration)} s${current.simulated ? ' · Simulation' : ''}` : 'Select trials to compare their recorded motion.')}</p></div>
+            <p>{current ? `${current.status[0].toUpperCase() + current.status.slice(1)} · ${current.error ||
+              `${seconds(current.table.duration)} s${current.simulated ? ' · Simulation' : ''}`}` :
+              'Open a recording to review its trajectory and tendon forces.'}</p></div>
             {busy && <button className="stop" onClick={() => { void api(`/runs/${busy.id}/stop`, { method: 'POST' }).then(refresh).catch(report); }}>Stop batch</button>}
           </div>
           <div className="viewport-toolbar">
@@ -392,6 +458,11 @@ function App() {
               <span>{mark.body} · {seconds(mark.start)}–{seconds(mark.end)} s · {mark.action}</span>
               <button disabled={pending} onClick={() => void saveReview({ ...review, intervals: review.intervals.filter((_, index) => index !== i) })}>Undo</button></div>)}
           </section>}
+          {current && openResult &&
+            <section className="downloads" aria-label="Local run files">
+              <h3>Run files</h3>
+              {openResult.files.map(file => <a key={file} href={localFile(openResult.id, file)} download>{file === 'bending.csv' ? 'Recording CSV' : file}</a>)}
+            </section>}
           {current && !imported && <section className="downloads" aria-label="Run files">
             <h3>Run files</h3>
             <a href={urlFor(focus, 'actuation.csv')}>Actuation CSV</a>

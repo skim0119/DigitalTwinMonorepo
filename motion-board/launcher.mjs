@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, request } from 'node:http';
-import { join, extname } from 'node:path';
+import { join, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { localResults } from './local-results.mjs';
 
 const { values } = parseArgs({ options: {
+  'output-dir': { type: 'string' },
   ssh: { type: 'string' }, 'api-port': { type: 'string', default: '5052' },
   port: { type: 'string', default: '8082' },
   'forward-port': { type: 'string', default: '15052' },
@@ -19,6 +21,8 @@ const localPort = port(values.port);
 const apiPort = port(values['api-port']);
 const upstreamPort = values.ssh ? port(values['forward-port']) : apiPort;
 if (upstreamPort === localPort) throw new Error('The console and upstream ports must be different.');
+const results = localResults(values['output-dir'] ? resolve(values['output-dir']) :
+  fileURLToPath(new URL('../output', import.meta.url)));
 const root = fileURLToPath(new URL('./dist', import.meta.url));
 if (!existsSync(join(root, 'index.html'))) throw new Error('Run npm run build before starting Motion Board.');
 const host = '127.0.0.1';
@@ -55,6 +59,11 @@ const server = createServer((req, res) => {
     return;
   }
   const path = new URL(req.url, origin).pathname;
+  if (path === '/local-results' || path.startsWith('/local-results/')) {
+    if (req.method !== 'GET') return res.writeHead(405, { Allow: 'GET' }).end();
+    void results(path, res);
+    return;
+  }
   const asset = path === '/' ? '/index.html' : path;
   if (!/^\/(index\.html|assets\/[\w.-]+)$/.test(asset)) return res.writeHead(404).end();
   const file = join(root, asset);
