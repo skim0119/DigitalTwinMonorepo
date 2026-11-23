@@ -14,7 +14,6 @@ else:
 
 LEG_S = 10
 STEPS_PER_LEG = 25
-PROFILES = {"pilot": (20, 30, 60), "fit": (30, 180, 300)}
 
 
 def make_creep_table(tendon, force, baseline_s, hold_s, recovery_s):
@@ -57,22 +56,16 @@ def main(argv=None):
                         help="zero-based motor index (default: 0)")
     parser.add_argument("-F", "--force-kgf", type=float, default=1.0,
                         help="peak tendon force in kgf (default: 1.0)")
-    parser.add_argument("--profile", choices=PROFILES, default="pilot",
-                        help="130 s pilot or 530 s fit (default: pilot)")
-    parser.add_argument("--baseline-s", type=float, help="override the baseline at preload")
-    parser.add_argument("--hold-s", type=float, help="override the peak hold")
-    parser.add_argument("--recovery-s", type=float, help="override the recovery at preload")
+    parser.add_argument("--baseline-s", type=float, default=30, help="baseline at preload (default: 30 s)")
+    parser.add_argument("--hold-s", type=float, default=180, help="peak hold (default: 180 s)")
+    parser.add_argument("--recovery-s", type=float, default=300, help="recovery at preload (default: 300 s)")
     add_collection_arguments(parser)
     args = parser.parse_args(argv)
     validate_collection_arguments(parser, args)
-    durations = tuple(
-        value if value is not None else default
-        for value, default in zip(
-            (args.baseline_s, args.hold_s, args.recovery_s), PROFILES[args.profile],
-        )
-    )
     try:
-        raw, duration = make_creep_table(args.tendon, args.force_kgf, *durations)
+        raw, duration = make_creep_table(
+            args.tendon, args.force_kgf, args.baseline_s, args.hold_s, args.recovery_s,
+        )
     except ValueError as error:
         parser.error(str(error))
 

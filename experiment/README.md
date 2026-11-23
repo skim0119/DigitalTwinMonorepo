@@ -150,16 +150,15 @@ magnitude is 0.09 kgf/s.
 
 | Phase | Default duration |
 | --- | ---: |
-| Preload baseline | 20 s |
+| Preload baseline | 30 s |
 | Loading leg | 10 s |
-| Peak hold | 30 s |
+| Peak hold | 180 s |
 | Unloading leg | 10 s |
-| Recovery at preload | 60 s |
+| Recovery at preload | 300 s |
 
 The table holds the force at the midpoint of each ramp interval, and
-commands the exact peak and preload at the respective leg endpoints. For a longer response, use `--profile fit` for a 530 s run with
-a 30 s baseline, 180 s peak hold, and 300 s recovery.
-The overall limit is 600 s. If omitted, the run name includes the tendon,
+commands the exact peak and preload at the respective leg endpoints.
+The default run takes 530 s. The overall limit is 600 s. If omitted, the run name includes the tendon,
 such as `exp3_<timestamp>_tendon_1`.
 
 Fit the model separately for each channel using the measured tension history in
@@ -176,12 +175,10 @@ preload, force range, and 10 s ramp duration as in Exp 3.
 
 Prepare the arm, start one GPIO/HX711 streamer and one mocap bridge, and
 source the ROS workspace on SpiRob. Copy **one trial line at a time** from
-[the Exp 3 command sheet](exp3_batch.sh). Each motor has one 130 s pilot
-and three 530 s fitting repeats. Calibrate, home, or review the pilot between
-commands as needed.
+[the Exp 3 command sheet](exp3_batch.sh). Each motor has three 530 s fitting
+repeats. Calibrate or home between commands as needed.
 
-Pilot results go under `output/experiment/exp3_pilot/T0/`. Fitting repeats
-go under `output/experiment/exp3_fit/T0/rep_1/` and the corresponding
+Fitting repeats go under `output/experiment/exp3_fit/T0/rep_1/` and the corresponding
 folders for the other motors and repeats. Each trial writes its own
 timestamped CSV and raw bundle.
 
