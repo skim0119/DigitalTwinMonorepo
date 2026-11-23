@@ -14,18 +14,42 @@ This is a monorepo in which most subfolders are independent and may have their o
 There are a few exceptions. Simple standalone Python scripts are included in `debug/`, and the main installable control library is in `control_core/`.
 
 The main repository contains shared configurations and support scripts that may be needed during initial setup. Installation instructions are in the tool READMEs.
-Users can customize which daemons or tools start when the Raspberry Pi powers on.
 
 | Tool | Purpose | Where it runs or is used |
 | --- | --- | --- |
 | [`debug/`](debug/) | Standalone hardware debugging scripts. Lightweight dependencies in `requirements.txt` | Raspberry Pi for hardware checks |
 | [`control_core/`](control_core/README.md) | Installable motor control library. | |
-| [`experiment-api/`](experiment-api/README.md) | Runs trials on the Pi and saves recorded poses, controls, and optional webcam video. | Raspberry Pi for live trials, local computer for simulated trials |
-| [`motion-board/`](motion-board/README.md) | Local browser console for uploading actuation CSVs, reviewing trajectories, and downloading results. | Local computer (Node.js), used in a browser |
+| [`experiment-runner/`](experiment-runner/README.md) | Shared playback and recording library for the direct experiment scripts. | Raspberry Pi |
+| [`motion-board/`](motion-board/README.md) | Local viewer for inspecting and cleaning saved experiment recordings. | Local computer (Node.js), used in a browser |
 | [`stream-gpio/`](stream-gpio/README.md) | C++ service on the Pi that streams GPIO levels and can read HX711 load cells for monitoring and force control. | Raspberry Pi |
 | [`stream-gpio-monitor/`](stream-gpio-monitor/README.md) | Rust monitor that connects to the Pi over SSH and serves a browser dashboard. | Local computer (Rust), used in a browser |
 
 See the [debug tools README](debug/README.md) for Xbox jogging and PID tuning.
+
+## Install on the Raspberry Pi
+
+Use the Pi account that owns the checkout. You’ll need a C++17 compiler,
+Boost headers, and a ROS 2 workspace configured to publish mocap on
+`/poses`. Use the system Python that matches your ROS 2 installation
+(Python 3.11 or newer).
+
+```sh
+cd ~/spirob_py_code
+make install
+make setup-pi
+systemctl status "spirob-gpio@$USER.service" "spirob-mocap@$USER.service"
+```
+
+`make install` creates or reuses `.venv` and installs the local Python packages
+in editable mode. Pass `PYTHON=/path/to/python3` to choose the interpreter when
+creating a new environment. `make setup-pi` builds the streamer and starts the
+GPIO and mocap services at boot.
+
+Stop any manually launched copies of the two sensor processes before setup.
+After setup, remove any lines in `~/.bashrc` that launch them. See the
+[Pi service guide](deploy/README.md) for migrating from the old HTTP service,
+running an experiment over SSH, and uninstalling the services with
+`make remove-pi`.
 
 ## Our Raspberry Pi setup
 
@@ -35,4 +59,4 @@ We developed and ran the Spirob experiments on a Raspberry Pi 4 Model B. The Pi 
 
 The GPIO streamer reads the HX711s and publishes telemetry for the monitor over WebSocket. Live experiments use the native PID and motor workers in `control_core`.
 
-This is a reference for the lab setup we used during development. The [BCM pin map](pins.json) records our GPIO assignments. For tool-specific hardware details, see the [GPIO streamer](stream-gpio/README.md), [control library](control_core/README.md), and [Experiment API](experiment-api/README.md) READMEs.
+This is a reference for the lab setup we used during development. The [BCM pin map](pins.json) records our GPIO assignments. For tool-specific hardware details, see the [GPIO streamer](stream-gpio/README.md), [control library](control_core/README.md), and [experiment runner](experiment-runner/README.md) READMEs.

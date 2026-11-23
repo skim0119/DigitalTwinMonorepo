@@ -21,14 +21,16 @@ Slack delivery fails. Notification failures preserve the experiment exit code.
 
 Run both collectors directly on Spirob. Use a Python environment with `control_core` and
 Matplotlib installed, and source the ROS 2 workspace if your shell has not
-already done so. Keep the GPIO streamer and mocap publisher running with
+already done so. Run `make install` from the repository root to set up the
+shared environment. Both scripts use the installed runner and write pose and
+force samples from RAM after motion stops. Keep the GPIO streamer and mocap publisher running with
 rigid body names beginning with `arm_` on `/poses`. Both collectors take the
-hardware lock directly. Stop the Experiment API service first if it is running
-on Spirob.
+hardware lock directly. See the [Pi sensor service setup](../deploy/README.md)
+for starting the streamer and bridge before a run.
 From the repository root on Spirob:
 
 ```sh
-python3 experiment/exp1_bending_collection.py -N 0 -F 2.5 -C 3 \
+.venv/bin/python -m experiment.exp1_bending_collection -N 0 -F 2.5 -C 3 \
   --max-tightening-steps "$MAX_TIGHTENING_STEPS"
 ```
 
@@ -90,7 +92,7 @@ Run Exp 2 on Spirob with the same hardware setup and verified tightening pulse
 limit as Exp 1.
 
 ```sh
-python3 experiment/exp2_bending_collection.py -F 2.5 -C 3 --name baseline \
+.venv/bin/python -m experiment.exp2_bending_collection -F 2.5 -C 3 --name baseline \
   --max-tightening-steps "$MAX_TIGHTENING_STEPS"
 ```
 
@@ -118,34 +120,3 @@ Both experiments generate their force tables with
 [`force_staircase`](quasi_static.py). The trial runner holds each table
 row until the next timestamp. The dwell is time-based, so choose it based on
 the measured settling time.
-
-## Run bending experiments from a local client through Experiment API
-
-With the Pi's Experiment API reachable over HTTP, run this from the local checkout:
-
-```sh
-python3 experiment/exp1_bending_through_api.py --api-url http://127.0.0.1:5052 \
-  -N 0 -F 2.5 -C 3 --step-kgf 0.2 --dwell-s 1
-
-python3 experiment/exp2_bending_through_api.py --api-url http://127.0.0.1:5052 \
-  -F 2.5 -C 3 --step-kgf 0.2 --dwell-s 1
-```
-
-Set `--api-url` to your forwarded or private API address. Add `--dry-run` to
-save the actuation CSV locally and validate it against the API before
-submitting a trial. A normal invocation starts a trial and confirms the
-mechanical reference to the API, so check the live zero and preload before
-running it. The local client needs only Python's standard library. It generates
-the same force staircase as its corresponding collector, with all cycles in a
-single actuation CSV and inactive tendons at 0.1 kgf. The server applies its
-configured limits and holds each row until the next timestamp.
-
-The client prints the trial ID, waits for terminal status, and saves the input
-table and exported run files under `output/experiment/exp1_api_*/` or `output/experiment/exp2_api_*/`. Failed
-or stopped trials also download the files available on the server.
-Interrupting the client ends local waiting. Use the API's stop endpoint to
-stop an active trial.
-
-To add another API-driven experiment, define its arguments and actuation table
-in its own script, then call `run_trial` from `experiment_client.py` with the
-table bytes, duration, mode, and unit.

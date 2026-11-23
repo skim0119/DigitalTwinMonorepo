@@ -279,7 +279,7 @@ def main():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SystemExit("The Experiment API or another collector owns the hardware.") from None
+            raise SystemExit("Another collector owns the hardware.") from None
         output = ROOT / "output" / "debug"
         output.mkdir(parents=True, exist_ok=True)
         path = output / datetime.now(timezone.utc).strftime("homing_%Y%m%dT%H%M%S.%fZ.csv")

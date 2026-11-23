@@ -60,7 +60,7 @@ def parse_table(raw, mode, unit):
             times.append(stamp)
             values.append(tuple(tendons))
     except (UnicodeError, csv.Error) as error:
-        raise ValueError("The upload is not a valid UTF-8 CSV.") from error
+        raise ValueError("The actuation table is not a valid UTF-8 CSV.") from error
     if len(times) < 2:
         raise ValueError("Include at least two rows.")
     return Table(mode, unit, tuple(times), tuple(values))

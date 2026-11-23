@@ -50,15 +50,13 @@ class Simulated:
 
 
 class Experiments:
-    def __init__(self, root, hardware=None, *, repeat_pause=0.5, webcam=None, homing=None):
+    def __init__(self, root, hardware=None, *, repeat_pause=0.5, webcam=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.hardware = hardware or Simulated()
         self.simulated = hardware is None
         self.repeat_pause = repeat_pause
         self.webcam = webcam
-        self.homing = homing
-        self.home_poses = {}
         self.lock = threading.RLock()
         self.runs = {}
         self.cancel = threading.Event()
@@ -100,8 +98,6 @@ class Experiments:
         with self.lock:
             self.last_pose = now
             self.last_body_pose[name] = now
-            if name in ("arm_base", "arm_tip"):
-                self.home_poses[name] = (now, stamp, frame, values)
             if self.poses is not None and (self.pose_prefix is None or name.startswith(self.pose_prefix)):
                 try:
                     self.poses.put_nowait((now, str(stamp), frame, name, *values))
@@ -149,29 +145,6 @@ class Experiments:
                                            name="trial-runner")
             self.worker.start()
             return [run.copy() for run in runs]
-
-    def home(self):
-        if self.homing is None:
-            raise RuntimeError("Homing is unavailable on this API server.")
-        report = {}
-        errors = []
-
-        def work():
-            try:
-                report.update(self.homing(self))
-            except Exception as error:
-                errors.append(error)
-
-        with self.lock:
-            if self.worker and self.worker.is_alive():
-                raise BusyError("An experiment or homing is already active.")
-            self.cancel.clear()
-            worker = self.worker = threading.Thread(target=work, name="homing")
-            worker.start()
-        worker.join()
-        if errors:
-            raise errors[0]
-        return report
 
     def stop(self, run_id):
         with self.lock:

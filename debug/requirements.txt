@@ -3,3 +3,6 @@ pygame
 
 # PID tuner and trial plots
 matplotlib
+
+# Optional Slack completion messages
+python-dotenv

@@ -49,11 +49,10 @@ def export(path, run, poses, controls, tendons, cycle_duration, cycles):
 def collect_local(raw, path, tendons, cycle_duration, cycles, args, *, number):
     import fcntl
 
-    sys.path.insert(0, str(ROOT / "experiment-api"))
     from control_core import open_controller, safety_limits
-    from experiment_api.hardware import Hardware
-    from experiment_api.runner import Experiments
-    from experiment_api.table import parse_table
+    from experiment_runner.hardware import Hardware
+    from experiment_runner.runner import Experiments
+    from experiment_runner.table import parse_table
 
     table = parse_table(raw, "force", "kgf")
     settings = json.loads(args.config.read_text())
@@ -89,7 +88,7 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args, *, number):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError("The Experiment API or another collector owns the hardware.") from None
+            raise RuntimeError("Another collector owns the hardware.") from None
         hardware = ForcePID(None)
         hardware.validate(table)
         experiment = Experiments(path.with_suffix(""), hardware)

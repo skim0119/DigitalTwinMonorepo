@@ -1,6 +1,5 @@
 [Unit]
 Description=Spirob GPIO and HX711 streamer
-PartOf=spirob-experiment@%i.service
 
 [Service]
 User=%i
@@ -8,3 +7,6 @@ WorkingDirectory=/home/%i/spirob_py_code/stream-gpio
 ExecStart=/home/%i/spirob_py_code/stream-gpio/stream-gpio
 Restart=always
 RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

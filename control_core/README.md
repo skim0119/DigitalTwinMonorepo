@@ -1,13 +1,13 @@
 # Spirob control core
 
 C++ force and displacement control for the Raspberry Pi 4, exposed to Python
-through pybind11. The experiment API sends targets and logs telemetry. Six
+through pybind11. The experiment runner sends targets and logs telemetry. Six
 native workers calculate motor commands and generate STEP/DIR edges.
 
-From the repository root, install into the experiment API environment:
+From the repository root, install into the experiment environment:
 
 ```sh
-python -m pip install ./control_core ./experiment-api
+make install
 ```
 
 Source installation needs a C++17 compiler. Use `uv build control_core --wheel`
@@ -19,11 +19,9 @@ UDP. Each native worker processes fresh timestamps and applies the EMA
 configured in root `pins.json`. The existing monitor still receives averaged
 values. Stop any standalone motor or HX711 scripts before a live trial.
 
-Launch the experiment API from the repository root so it can read `pins.json`,
+Launch the direct collector from the repository root so it can read `pins.json`,
 or set `SPIROB_PINS_CONFIG` to the full path. The global limits in
-[pins.json](../pins.json) default to 4.5 kgf and 3000 steps/s. The API
-calibration file supplies verified travel and can set lower force and speed
-limits. Native workers stop on an expired
+[pins.json](../pins.json) default to 4.5 kgf and 3000 steps/s. The direct collector accepts a lower per-trial tension limit. Native workers stop on an expired
 command, stale sensor data, or measured tension at the configured limit.
 An invalid conversion pauses STEP pulses until two valid conversions arrive.
 A silent sensor pauses motion after 250 ms without a usable conversion.

@@ -1,4 +1,4 @@
-"""Build force staircases for the Experiment API's zero-order hold playback."""
+"""Build force staircases for zero-order hold playback."""
 
 import csv
 import io
@@ -25,7 +25,7 @@ def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2, p
     if ticks * dwell > 600:
         raise ValueError("Total duration must be at most 600 s.")
     if ticks > 256 * 1024 // 14:
-        raise ValueError("The force table would exceed the API upload limit.")
+        raise ValueError("The force table would exceed the trial table size limit.")
 
     levels = [waypoints[0]]
     for start, end, distance, count in phases:
@@ -46,7 +46,7 @@ def force_staircase(tendons, waypoints, cycles, steps, dwell, *, step_kgf=0.2, p
         writer.writerow((tick * dwell, *values))
     raw = stream.getvalue().encode()
     if len(raw) > 256 * 1024:
-        raise ValueError("The force table exceeds the API upload limit.")
+        raise ValueError("The force table exceeds the trial table size limit.")
     return raw, level_count * dwell
 
 
