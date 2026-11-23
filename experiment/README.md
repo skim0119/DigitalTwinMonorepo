@@ -205,3 +205,8 @@ Each row retains trial elapsed time, measured force, and the original cycle
 number. The pose origin is shared across cycles so residual bending and
 shakedown remain visible. Fit consecutive cycles with their loading history
 when estimating a memory-dependent model.
+
+Add `--no-poses` to any direct collector for a force-only recording. This
+mode skips the mocap subscription and pose checks. The main CSV contains
+the same force and motor telemetry as the raw `controls.csv`, and the
+run bundle has no `poses.csv`. The GPIO/HX711 streamer is still required.

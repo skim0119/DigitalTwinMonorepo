@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from collections import deque
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -50,13 +51,14 @@ class Simulated:
 
 
 class Experiments:
-    def __init__(self, root, hardware=None, *, repeat_pause=0.5, webcam=None):
+    def __init__(self, root, hardware=None, *, repeat_pause=0.5, webcam=None, record_poses=True):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.hardware = hardware or Simulated()
         self.simulated = hardware is None
         self.repeat_pause = repeat_pause
         self.webcam = webcam
+        self.record_poses = record_poses
         self.lock = threading.RLock()
         self.runs = {}
         self.cancel = threading.Event()
@@ -80,7 +82,7 @@ class Experiments:
             self.runs[run["id"]] = run
 
     def start_mocap(self):
-        if self.simulated:
+        if self.simulated or not self.record_poses:
             return
         from .mocap import receive_poses
 
@@ -199,16 +201,17 @@ class Experiments:
             raise RuntimeError("No recent mocap pose for " + ", ".join(missing) + ".")
 
     def record(self, table, run, required_bodies, body_prefix):
-        if not self.simulated and (self.mocap_error or time.monotonic() - self.last_pose > 1):
+        if self.record_poses and not self.simulated and (self.mocap_error or time.monotonic() - self.last_pose > 1):
             raise RuntimeError(self.mocap_error or "No recent OptiTrack poses. Check the ROS bridge.")
-        if not self.simulated:
+        if self.record_poses and not self.simulated:
             self.check_required_bodies(required_bodies, time.monotonic(), body_prefix)
         folder = self.root / run["id"]
-        with (folder / "poses.csv").open("w", newline="") as pose_file, \
+        pose_output = (folder / "poses.csv").open("w", newline="") if self.record_poses else nullcontext()
+        with pose_output as pose_file, \
                 (folder / "controls.csv").open("w", newline="") as control_file:
             pose_rows = [POSE_FIELDS]
             control_rows = [CONTROL_FIELDS]
-            queue = Queue(maxsize=8192)
+            queue = Queue(maxsize=8192) if self.record_poses else None
             latest = {}
             stop_video = None
             start = None
@@ -234,10 +237,10 @@ class Experiments:
                     now = time.monotonic()
                     if now >= end:
                         break
-                    if self.pose_overrun or (not self.simulated and
-                            (self.mocap_error or now - self.last_pose > 1)):
+                    if self.record_poses and (self.pose_overrun or (not self.simulated and
+                            (self.mocap_error or now - self.last_pose > 1))):
                         raise RuntimeError("Pose recording was interrupted or fell behind.")
-                    if (required_bodies or body_prefix) and not self.simulated:
+                    if self.record_poses and (required_bodies or body_prefix) and not self.simulated:
                         self.check_required_bodies(required_bodies, now, body_prefix)
                     values = table.at(now - start)
                     outputs = self.hardware.update(table, values, now, max(now - previous, 0.001), end)
@@ -247,7 +250,7 @@ class Experiments:
                             for tendon, value, output in zip(TENDONS, values, outputs)]
                     control_rows.extend(rows)
                     self.emit_preview(run["id"], "controls", rows)
-                    if self.simulated:
+                    if self.record_poses and self.simulated:
                         x = self.hardware.position * 0.008
                         stamp = time.time_ns()
                         tip = (x, x * math.sin(now - start), 0.14 + abs(x) * 0.5,
@@ -256,7 +259,8 @@ class Experiments:
                         if required_bodies or body_prefix:
                             self.on_pose(now, stamp, "world", "arm_tip", tip)
                             self.on_pose(now, stamp, "world", "arm_base", (0, 0, 0.3, 0, 0, 0, 1))
-                    self.drain(queue, start, end, pose_rows, latest)
+                    if queue is not None:
+                        self.drain(queue, start, end, pose_rows, latest)
                     if latest:
                         self.emit_preview(run["id"], "poses", list(latest.values()))
                         latest.clear()
@@ -274,9 +278,10 @@ class Experiments:
                             stop_video()
                         except Exception:
                             logger.exception("Could not finalize webcam recording")
-                    if start is not None:
-                        self.drain(queue, start, end, pose_rows, latest)
-                    csv.writer(pose_file).writerows(pose_rows)
+                    if pose_file is not None:
+                        if start is not None:
+                            self.drain(queue, start, end, pose_rows, latest)
+                        csv.writer(pose_file).writerows(pose_rows)
                     csv.writer(control_file).writerows(control_rows)
             if self.pose_overrun:
                 raise RuntimeError("Pose recorder could not keep up.")

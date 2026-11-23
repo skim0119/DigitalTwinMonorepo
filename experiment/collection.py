@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -89,19 +90,20 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args, *, label, re
             raise RuntimeError("Another collector owns the hardware.") from None
         hardware = ForcePID(None)
         hardware.validate(table)
-        experiment = Experiments(path.with_suffix(""), hardware)
+        experiment = Experiments(path.with_suffix(""), hardware, record_poses=not args.no_poses)
         stopped = False
         run = None
         try:
-            print(f"Waiting for mocap: {BODY_PREFIX}*", flush=True)
-            experiment.start_mocap()
-            deadline = time.monotonic() + 3
-            while not experiment.mocap_error and time.monotonic() < deadline:
-                try:
-                    experiment.check_required_bodies(required_bodies, time.monotonic(), BODY_PREFIX)
-                    break
-                except RuntimeError:
-                    time.sleep(0.05)
+            if not args.no_poses:
+                print(f"Waiting for mocap: {BODY_PREFIX}*", flush=True)
+                experiment.start_mocap()
+                deadline = time.monotonic() + 3
+                while not experiment.mocap_error and time.monotonic() < deadline:
+                    try:
+                        experiment.check_required_bodies(required_bodies, time.monotonic(), BODY_PREFIX)
+                        break
+                    except RuntimeError:
+                        time.sleep(0.05)
             run, = experiment.submit(table, raw, label, 1, required_bodies, body_prefix=BODY_PREFIX)
             print(f"{label} | Recording run {run['id']}", flush=True)
             next_report = 0.0
@@ -141,12 +143,21 @@ def collect_local(raw, path, tendons, cycle_duration, cycles, args, *, label, re
                 for elapsed, *values in rows:
                     yield (float(elapsed), *values)
 
+    if args.no_poses:
+        controls = folder / "controls.csv"
+        if controls.is_file():
+            with controls.open("rb") as source, path.open("xb") as destination:
+                shutil.copyfileobj(source, destination)
+        return report_result(path, run, controls.is_file(), stopped)
+
     complete = export(path, run, read_rows("poses.csv"), read_rows("controls.csv"),
                       tendons, cycle_duration, cycles)
     return report_result(path, run, complete, stopped)
 
 
 def add_collection_arguments(parser):
+    parser.add_argument("--no-poses", action="store_true",
+                        help="record forces without subscribing to mocap")
     parser.add_argument("--name", help="Append a name to the run folder and CSV")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "output" / "experiment",
                         help="Parent folder for the run directory and CSV")
