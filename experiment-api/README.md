@@ -56,11 +56,10 @@ It has no independent absolute-position measurement.
 
 Before enabling the drivers, establish the mechanical zero and preload, and
 verify step direction, travel, and stop behavior on the Pi. The browser requires
-confirmation of the reference before a hardware batch starts. If a trial leaves
-any motor away from step zero, later trials in the batch cannot run. A
-successful API homing request can clear the gate for the next force trial
-while retaining the accumulated step positions and calibrated travel bounds.
-Displacement trials still require mechanical zero. Stop cancels the
+confirmation of the reference before a hardware batch starts. Position homing
+can be performed manually or through the API. Force trials start from the
+current tracked step positions and use the remaining calibrated travel.
+Displacement trials require mechanical zero. Stop cancels the
 remaining trials and preserves the partial record. WebSocket disconnects do
 not interrupt an accepted trial. The local controller stops on stale feedback
 or an expired command.

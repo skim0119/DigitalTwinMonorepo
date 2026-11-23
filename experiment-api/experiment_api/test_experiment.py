@@ -58,6 +58,41 @@ class TableTest(unittest.TestCase):
         cancelled.set()
         hardware.open(table, cancelled)
 
+    def test_force_trial_can_reopen_away_from_zero_without_api_homing(self):
+        config = Calibration.load(
+            {"steps_per_mm": [2] * 6, "travel_mm": [[-20, 20]] * 6}, (4.5, 3000),
+        )
+        bounds_seen = []
+
+        class Controller:
+            def ready(self):
+                return True
+
+            def status(self):
+                return [(0, 3, 0)] * 6
+
+            def stop(self):
+                pass
+
+        def open_controller(_path, bounds, **_options):
+            bounds_seen.append(bounds)
+            return Controller()
+
+        hardware = Hardware(config, open_controller=open_controller)
+        force = parse_table(EXAMPLE, "force", "N")
+        cancel = threading.Event()
+        hardware.open(force, cancel)
+        hardware.finish()
+
+        displacement = parse_table(EXAMPLE, "displacement", "mm")
+        with self.assertRaisesRegex(RuntimeError, "mechanical zero"):
+            hardware.open(displacement, cancel)
+
+        hardware.open(force, cancel)
+        self.assertEqual(bounds_seen, [[(-40, 40)] * 6, [(-43, 37)] * 6])
+        hardware.finish()
+        self.assertEqual(hardware.position_steps, (6,) * 6)
+
     def test_hardware_unit_and_speed_contract(self):
         config = Calibration.load(dict(steps_per_mm=[-2, 2, 2, 2, 2, 2],
                                       travel_mm=[[0, 20]] * 6, max_force_kgf=1, max_step_rate=100), (4.5, 3000))

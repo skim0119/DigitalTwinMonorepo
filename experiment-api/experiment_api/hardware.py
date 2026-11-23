@@ -74,18 +74,16 @@ class Hardware:
         self.controller = None
         self.reference_valid = True
         self.position_steps = (0,) * 6
-        self.force_home_verified = False
 
     def validate(self, table):
         self.calibration.validate(table)
 
     def open(self, table, cancel):
-        if not self.reference_valid and not (table.mode == "force" and self.force_home_verified):
-            raise RuntimeError("Re-establish the mechanical zero, or verify homing before another force trial.")
+        if table.mode == "displacement" and not self.reference_valid:
+            raise RuntimeError("Re-establish the mechanical zero before another displacement trial.")
         self.open_at_position(cancel)
 
     def open_at_position(self, cancel):
-        self.force_home_verified = False
         if self.open_controller is None:
             from control_core import open_controller
             self.open_controller = open_controller

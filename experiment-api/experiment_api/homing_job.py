@@ -43,7 +43,6 @@ def load_homing(script):
             hardware.finish()
 
         homed = result == "homed" and not experiments.cancel.is_set()
-        hardware.force_home_verified = homed
         report = {"homed": homed, "result": result, "elapsed_s": time.monotonic() - start}
         if last is not None:
             _, lateral, z, forces, _ = last
