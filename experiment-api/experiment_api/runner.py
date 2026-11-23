@@ -231,15 +231,14 @@ class Experiments:
         if not self.simulated:
             self.check_required_bodies(required_bodies, time.monotonic(), body_prefix)
         folder = self.root / run["id"]
-        with (folder / "poses.csv").open("w", newline="", buffering=1) as pose_file, \
-                (folder / "controls.csv").open("w", newline="", buffering=1) as control_file:
-            pose_csv = csv.writer(pose_file)
-            control_csv = csv.writer(control_file)
-            pose_csv.writerow(POSE_FIELDS)
-            control_csv.writerow(CONTROL_FIELDS)
+        with (folder / "poses.csv").open("w", newline="") as pose_file, \
+                (folder / "controls.csv").open("w", newline="") as control_file:
+            pose_rows = [POSE_FIELDS]
+            control_rows = [CONTROL_FIELDS]
             queue = Queue(maxsize=8192)
             latest = {}
             stop_video = None
+            start = None
             try:
                 self.hardware.open(table, self.cancel)
                 if self.cancel.is_set():
@@ -273,7 +272,7 @@ class Experiments:
                         break
                     rows = [(now - start, tendon, value, table.unit, *output)
                             for tendon, value, output in zip(TENDONS, values, outputs)]
-                    control_csv.writerows(rows)
+                    control_rows.extend(rows)
                     self.emit_preview(run["id"], "controls", rows)
                     if self.simulated:
                         x = self.hardware.position * 0.008
@@ -284,7 +283,7 @@ class Experiments:
                         if required_bodies or body_prefix:
                             self.on_pose(now, stamp, "world", "arm_tip", tip)
                             self.on_pose(now, stamp, "world", "arm_base", (0, 0, 0.3, 0, 0, 0, 1))
-                    self.drain(queue, start, end, pose_csv, latest)
+                    self.drain(queue, start, end, pose_rows, latest)
                     if latest:
                         self.emit_preview(run["id"], "poses", list(latest.values()))
                         latest.clear()
@@ -302,21 +301,24 @@ class Experiments:
                             stop_video()
                         except Exception:
                             logger.exception("Could not finalize webcam recording")
-                    if "start" in locals():
-                        self.drain(queue, start, end, pose_csv, latest)
+                    if start is not None:
+                        self.drain(queue, start, end, pose_rows, latest)
+                    csv.writer(pose_file).writerows(pose_rows)
+                    csv.writer(control_file).writerows(control_rows)
             if self.pose_overrun:
                 raise RuntimeError("Pose recorder could not keep up.")
 
     @staticmethod
-    def drain(queue, start, end, writer, latest):
-        while True:
+    def drain(queue, start, end, rows, latest):
+        # Keep draining bounded even if mocap produces new samples during this tick.
+        for _ in range(queue.qsize()):
             try:
                 timestamp, *pose = queue.get_nowait()
             except Empty:
                 return
             if start <= timestamp <= end:
                 row = (timestamp - start, *pose)
-                writer.writerow(row)
+                rows.append(row)
                 latest[pose[2]] = row
 
     def close(self):

@@ -108,7 +108,9 @@ Each run directory contains `actuation.csv`, `run.json`, `poses.csv`,
 timestamp, frame, rigid-body name, position in meters, and quaternion in XYZW
 order. The control rows are sampled at the runner update rate and contain the
 applied setpoint, observed filtered load, motor step count, and step rate.
-Pose and control rows have independent timestamps. Partial recordings and
+Pose and control rows have independent timestamps. Pose and control samples are buffered in memory during actuation and written
+after the controller stops. A process crash or power loss can lose buffered
+samples. Partial recordings and
 failure reasons are preserved.
 
 After each trial with recorded samples, the runner saves `diagnostics.png` next

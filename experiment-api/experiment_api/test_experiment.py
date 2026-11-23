@@ -141,6 +141,35 @@ class ApiTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "Experiment failed to reach expected state")
             time.sleep(.02)
 
+    def test_record_flushes_samples_after_controller_stops(self):
+        with tempfile.TemporaryDirectory() as folder:
+            experiment = Experiments(folder)
+            run = {"id": "buffered"}
+            directory = Path(folder) / run["id"]
+            directory.mkdir()
+            paths = [directory / name for name in ("poses.csv", "controls.csv")]
+            update = experiment.hardware.update
+            updates = 0
+
+            def fail_after_one_sample(*args):
+                nonlocal updates
+                self.assertEqual([path.stat().st_size for path in paths], [0, 0])
+                updates += 1
+                if updates == 2:
+                    raise RuntimeError("Motion command expired")
+                return update(*args)
+
+            def finish():
+                self.assertEqual([path.stat().st_size for path in paths], [0, 0])
+
+            experiment.hardware.update = fail_after_one_sample
+            experiment.hardware.finish = finish
+            with self.assertRaisesRegex(RuntimeError, "Motion command expired"):
+                experiment.record(parse_table(EXAMPLE, "force", "N"), run, (), None)
+            for path, row_count in zip(paths, (1, 6)):
+                with path.open(newline="") as stream:
+                    self.assertEqual(len(list(csv.DictReader(stream))), row_count)
+
     def test_repeats_stream_download_review_and_restart(self):
         with tempfile.TemporaryDirectory() as folder:
             experiment = Experiments(folder, repeat_pause=.01)

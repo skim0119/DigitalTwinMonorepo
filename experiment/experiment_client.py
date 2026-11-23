@@ -62,24 +62,24 @@ def _run_trial(args, raw, duration, *, label, folder_prefix, mode, unit, require
         raise RuntimeError("Submission outcome is unknown. Check GET /runs before resubmitting.") from error
 
     run_id = run["id"]
+    files_url = f"{base_url}/runs/{run_id}/files"
+    status_url = f"{files_url}/run.json"
     print(f"Trial {run_id} | scheduled actuation {duration:g} s", flush=True)
     (folder / "run.json").write_text(json.dumps(run, indent=2) + "\n")
     deadline = time.monotonic() + duration + 120
     while run["status"] in ACTIVE:
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"Stopped waiting for {run_id}. Check GET /runs for its current status.")
+            raise RuntimeError(f"Stopped waiting for {run_id}. Check {status_url} for its current status.")
         time.sleep(1)
-        runs = request_json(f"{base_url}/runs")
-        updated = next((item for item in runs if item["id"] == run_id), None)
-        if updated is not None:
-            if updated["status"] != run["status"]:
-                print(f"Trial {run_id} | {updated['status']}", flush=True)
-            run = updated
+        updated = request_json(status_url)
+        if updated["status"] != run["status"]:
+            print(f"Trial {run_id} | {updated['status']}", flush=True)
+        run = updated
 
     files = (*FILES, "webcam.mp4") if run.get("has_video") else FILES
     for name in files:
         try:
-            download(f"{base_url}/runs/{run_id}/files/{name}", folder / name)
+            download(f"{files_url}/{name}", folder / name)
         except HTTPError as error:
             if error.code != 404 or run["status"] == "complete" or name in ("actuation.csv", "run.json"):
                 raise
