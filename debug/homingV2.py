@@ -23,8 +23,12 @@ SETTLE_S = 0.5
 FORCE_TOL_KGF = 0.02
 POSE_MAX_AGE_S = 0.25
 BASELINE_S = 0.8
-PROBE_S = 0.75
-PROBE_ON_S = 0.60
+PAIRS = ((0, 5), (1, 3), (2, 4))
+OPPOSITE = {a: b for pair in PAIRS for a, b in (pair, pair[::-1])}
+PAYOUT_KGF = 0.05
+PROBE_S = 3.5
+PROBE_ON_S = 2.0
+INITIAL_PROBE_KGF = 1.0
 PROBE_KGF = 0.35
 CORRECTION_KGF = 0.65
 FINAL_S = 2.5
@@ -32,9 +36,14 @@ RETRY_SETTLE_S = 1.5
 MAX_PULSE_S = 2.0
 
 
+def residual(feedback):
+    return max(math.hypot(*feedback[:2]), math.hypot(*feedback[2:]))
+
+
 def pull(tendon, force):
     targets = list(TARGETS)
     targets[tendon] = force
+    targets[OPPOSITE[tendon]] = PAYOUT_KGF
     return targets
 
 
@@ -43,72 +52,100 @@ class CounterBend:
         self.known_tendon = known_tendon
         self.pulse_start = None
         self.pulse_xy = None
-        self.known_direction = None
         self.start = None
         self.probe_starts = {}
         self.responses = {}
-        self.returning = False
+        self.window = deque()
+        self.recovery_start = None
+        self.failed_pairs = set()
         self.selected = None
+        self.probe_force = INITIAL_PROBE_KGF
 
-    def command(self, now, deadline, xyz, xy_tol_mm):
+    def command(self, now, deadline, xyz, at_baseline, stamp):
         if self.start is None:
             self.start = now
         elapsed = now - self.start
         if elapsed < BASELINE_S:
             return "baseline", TARGETS
         final_s = 4.0 if self.known_tendon is not None else FINAL_S
-        if self.returning or deadline - now <= final_s + SETTLE_S:
-            return "verify", TARGETS
+        finishing = deadline - now <= final_s + SETTLE_S
 
         probe_time = elapsed - BASELINE_S
-        tendon = int(probe_time / PROBE_S)
-        if self.known_tendon is None and tendon < len(TARGETS):
-            if probe_time - tendon * PROBE_S < PROBE_ON_S:
+        pair_index = int(probe_time / PROBE_S)
+        if self.known_tendon is None and pair_index < len(PAIRS) and not finishing:
+            tendon, opposite = PAIRS[pair_index]
+            if probe_time - pair_index * PROBE_S < PROBE_ON_S:
                 self.probe_starts.setdefault(tendon, xyz)
-                return "probe", pull(tendon, PROBE_KGF)
+                return "probe", pull(tendon, self.probe_force)
             if tendon in self.probe_starts and tendon not in self.responses:
                 self.responses[tendon] = tuple(
                     a - b for a, b in zip(xyz, self.probe_starts[tendon])
                 )
+                # Reversing a pair is assumed to reverse its local bending response.
+                self.responses[opposite] = tuple(-v for v in self.responses[tendon])
             return "release", TARGETS
 
-        lateral = math.hypot(*xyz)
-        outside_tolerance = max(math.hypot(*xyz[:2]), math.hypot(*xyz[2:])) > xy_tol_mm
-        if self.pulse_start is None and outside_tolerance:
-            if self.known_tendon is not None:
-                if self.known_direction is None:
-                    self.known_direction = xyz
-                if sum(a * b for a, b in zip(xyz, self.known_direction)) > 0:
-                    self.selected = self.known_tendon
-            elif self.responses:
-                inward, selected = max(
-                    (-sum(a * b for a, b in zip(xyz, response)) / lateral, index)
-                    for index, response in self.responses.items()
-                )
-                if inward > 0.1:
-                    self.selected = selected
-            if self.selected is not None:
-                self.pulse_start = now
-                self.pulse_xy = xyz
-
+        error = residual(xyz)
         if self.pulse_start is not None:
-            initial_offset = math.hypot(*self.pulse_xy)
-            if (
-                now - self.pulse_start < MAX_PULSE_S
-                and sum(a * b for a, b in zip(xyz, self.pulse_xy)) > 0
-                and lateral <= initial_offset + 2.0
-            ):
+            duration = min(MAX_PULSE_S, 0.5 * residual(self.pulse_xy))
+            if (not finishing and now - self.pulse_start < duration and error > 1.0
+                    and error <= residual(self.pulse_xy) + 2.0
+                    and sum(a*b for a, b in zip(xyz, self.pulse_xy)) > 0):
                 return "counter-bend", pull(self.selected, CORRECTION_KGF)
-        self.returning = True
-        return "verify", TARGETS
+            self.pulse_start = None
+            self.recovery_start = now
 
-    def retry(self):
-        if self.pulse_start is None:
-            return False
-        self.pulse_start = None
-        self.selected = None
-        self.returning = False
-        return True
+        # Compare poses only under baseline load and after motion has settled.
+        if self.recovery_start is None:
+            self.recovery_start = now
+        if not at_baseline:
+            self.window.clear()
+        elif not self.window or stamp > self.window[-1][0]:
+            self.window.append((stamp, xyz))
+        while len(self.window) > 1 and stamp - self.window[1][0] >= SETTLE_S:
+            self.window.popleft()
+        settled = (self.window and stamp - self.window[0][0] >= SETTLE_S
+                   and all(math.dist(point, xyz) <= 0.2 for _, point in self.window))
+        if not settled or now - self.recovery_start < RETRY_SETTLE_S:
+            if now - self.recovery_start >= 8.0:
+                return "recovery timeout", TARGETS
+            return "recover", TARGETS
+        if error <= 1.0:
+            return "verify", TARGETS
+
+        if finishing:
+            return "recover", TARGETS
+
+        if self.pulse_xy is not None:
+            change = tuple(a-b for a, b in zip(xyz, self.pulse_xy))
+            self.responses[self.selected] = change
+            if residual(self.pulse_xy) - error < 0.2:
+                self.failed_pairs.update((self.selected, OPPOSITE[self.selected]))
+                self.selected = None
+            self.pulse_xy = None
+        if self.selected is None:
+            if self.known_tendon is not None:
+                if self.known_tendon in self.failed_pairs:
+                    return "no retained improvement", TARGETS
+                self.selected = self.known_tendon
+            else:
+                candidates = [(sum(-a*b for a, b in zip(xyz, response)), tendon)
+                              for tendon, response in self.responses.items()
+                              if tendon not in self.failed_pairs]
+                if not candidates or max(candidates)[0] <= 0:
+                    self.start = now
+                    self.responses.clear()
+                    self.probe_starts.clear()
+                    self.failed_pairs.clear()
+                    self.probe_force = PROBE_KGF
+                    self.window.clear()
+                    self.recovery_start = None
+                    return "baseline", TARGETS
+                self.selected = max(candidates)[1]
+        self.pulse_start = now
+        self.pulse_xy = xyz
+        self.window.clear()
+        return "counter-bend", pull(self.selected, CORRECTION_KGF)
 
 
 def positive_float(value):
@@ -161,7 +198,7 @@ def home(
     verification_started = None
     minimum_verification = 4.0 if known_tendon is not None else RETRY_SETTLE_S
     next_sample = start
-    # Joint homing needs measured position and tilt responses for each tendon.
+    # Joint homing needs measured position and tilt responses for each antagonistic pair.
     sequence = CounterBend(known_tendon if tilt_tol_deg is None else None)
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
@@ -189,12 +226,15 @@ def home(
             feedback = tuple(value / xy_tol_mm for value in xyz[:2])
             if tilt_tol_deg is not None:
                 feedback += tuple(value / tilt_tol_deg for value in tilt_xy)
-            phase, targets = sequence.command(now, deadline, feedback, 1.0)
-            controller.command(targets, True, min(0.15, deadline - now))
             forces = tuple(channel[0] for channel in controller.pid_status())
+            at_baseline = len(forces) == 6 and all(
+                abs(f - 0.1) <= FORCE_TOL_KGF for f in forces
+            )
+            phase, targets = sequence.command(now, deadline, feedback, at_baseline, pose[0])
+            controller.command(targets, True, min(0.15, deadline - now))
         except RuntimeError as error:
             return f"controller fault: {error}", first, last
-        if not all(math.isfinite(force) for force in forces):
+        if len(forces) != 6 or not all(math.isfinite(force) for force in forces):
             return "invalid load-cell reading", first, last
         stamp = pose[0]
         tilt = math.hypot(*tilt_xy) if tilt_xy else None
@@ -216,19 +256,10 @@ def home(
         last = (now, lateral, z, forces, tilt)
         if phase == "verify" and verification_started is None:
             verification_started = now
-        residual = max(math.hypot(*feedback[:2]), math.hypot(*feedback[2:]))
-        if (
-            phase == "verify"
-            and now - verification_started >= RETRY_SETTLE_S
-            and residual > 1.0
-            and error <= FORCE_TOL_KGF
-            and z < 0
-            and deadline - now > max(FINAL_S, minimum_verification) + SETTLE_S
-            and sequence.retry()
-        ):
+        if phase in ("recovery timeout", "no retained improvement"):
+            return phase, first, last
+        if phase != "verify":
             verification_started = None
-            stable.clear()
-            continue
         if (
             phase not in ("baseline", "verify")
             or lateral > xy_tol_mm
@@ -249,8 +280,8 @@ def home(
             if phase == "verify" and now - verification_started < settle_time:
                 continue
             if all(
-                math.dist(xyz, point) <= xy_tol_mm
-                and (tilt_tol_deg is None or math.dist(tilt_xy, angle) <= tilt_tol_deg)
+                math.dist(xyz, point) <= 0.2 * xy_tol_mm
+                and (tilt_tol_deg is None or math.dist(tilt_xy, angle) <= 0.2 * tilt_tol_deg)
                 for _, point, angle in stable
             ):
                 return "homed", first, last
@@ -266,7 +297,7 @@ def main():
         "--known-tendon",
         type=int,
         choices=range(1, 7),
-        help="Use a previously measured inward tendon with --position-only; joint homing probes all tendons.",
+        help="Use a previously measured inward tendon with --position-only; joint homing probes all three antagonistic pairs.",
     )
     orientation = parser.add_mutually_exclusive_group()
     orientation.add_argument(
@@ -296,9 +327,10 @@ def main():
     force_limit, rate_limit = safety_limits(settings)
     force_limit = min(force_limit, args.max_tension_kg)
     step_limit = settings.get("max_tightening_steps", 3000)
-    if force_limit <= CORRECTION_KGF or type(step_limit) is not int or step_limit <= 0:
+    required_force = CORRECTION_KGF if known_tendon is not None and tilt_tol_deg is None else INITIAL_PROBE_KGF
+    if force_limit <= required_force or type(step_limit) is not int or step_limit <= 0:
         parser.error(
-            "Force limit must exceed 0.65 kgf and tightening limit must be positive."
+            f"Force limit must exceed {required_force} kgf and tightening limit must be positive."
         )
 
     pose = None
