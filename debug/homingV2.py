@@ -48,7 +48,8 @@ def pull(tendon, force):
 
 
 class CounterBend:
-    def __init__(self, known_tendon=None):
+    def __init__(self, known_tendon=None, orientation_weight=2.0):
+        self.orientation_weight = orientation_weight
         self.known_tendon = known_tendon
         self.pulse_start = None
         self.pulse_xy = None
@@ -60,6 +61,13 @@ class CounterBend:
         self.failed_pairs = set()
         self.selected = None
         self.probe_force = INITIAL_PROBE_KGF
+
+    def inner(self, a, b):
+        return sum(x * y * (self.orientation_weight if i >= 2 else 1.0)
+                   for i, (x, y) in enumerate(zip(a, b)))
+
+    def score(self, pose):
+        return math.sqrt(self.inner(pose, pose))
 
     def command(self, now, deadline, xyz, at_baseline, stamp):
         if self.start is None:
@@ -89,8 +97,8 @@ class CounterBend:
         if self.pulse_start is not None:
             duration = min(MAX_PULSE_S, 0.5 * residual(self.pulse_xy))
             if (not finishing and now - self.pulse_start < duration and error > 1.0
-                    and error <= residual(self.pulse_xy) + 2.0
-                    and sum(a*b for a, b in zip(xyz, self.pulse_xy)) > 0):
+                    and self.score(xyz) <= self.score(self.pulse_xy) + 2.0
+                    and self.inner(xyz, self.pulse_xy) > 0):
                 return "counter-bend", pull(self.selected, CORRECTION_KGF)
             self.pulse_start = None
             self.recovery_start = now
@@ -119,7 +127,7 @@ class CounterBend:
         if self.pulse_xy is not None:
             change = tuple(a-b for a, b in zip(xyz, self.pulse_xy))
             self.responses[self.selected] = change
-            if residual(self.pulse_xy) - error < 0.2:
+            if self.score(self.pulse_xy) - self.score(xyz) < 0.2:
                 self.failed_pairs.update((self.selected, OPPOSITE[self.selected]))
                 self.selected = None
             self.pulse_xy = None
@@ -129,7 +137,7 @@ class CounterBend:
                     return "no retained improvement", TARGETS
                 self.selected = self.known_tendon
             else:
-                candidates = [(sum(-a*b for a, b in zip(xyz, response)), tendon)
+                candidates = [(-self.inner(xyz, response), tendon)
                               for tendon, response in self.responses.items()
                               if tendon not in self.failed_pairs]
                 if not candidates or max(candidates)[0] <= 0:
@@ -191,6 +199,7 @@ def home(
     deadline,
     known_tendon=None,
     tilt_tol_deg=None,
+    orientation_weight=2.0,
 ):
     start = deadline - MAX_RUN_S
     first = last = None
@@ -199,7 +208,7 @@ def home(
     minimum_verification = 4.0 if known_tendon is not None else RETRY_SETTLE_S
     next_sample = start
     # Joint homing needs measured position and tilt responses for each antagonistic pair.
-    sequence = CounterBend(known_tendon if tilt_tol_deg is None else None)
+    sequence = CounterBend(known_tendon if tilt_tol_deg is None else None, orientation_weight)
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
         now = time.monotonic()
@@ -314,6 +323,8 @@ def main():
     )
     parser.set_defaults(tip_axis="z")
     parser.add_argument("--tilt-tol-deg", type=positive_float, default=5.0)
+    parser.add_argument("--orientation-weight", type=positive_float, default=5.0,
+                        help="Weight on squared tilt error relative to squared lateral error, each normalized by its tolerance (default: 2).")
     args = parser.parse_args()
     tilt_tol_deg = args.tilt_tol_deg if args.tip_axis else None
     known_tendon = None if args.known_tendon is None else args.known_tendon - 1
@@ -399,6 +410,7 @@ def main():
                         deadline,
                         known_tendon,
                         tilt_tol_deg,
+                        args.orientation_weight,
                     )
                 finally:
                     controller.stop()
