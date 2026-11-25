@@ -60,6 +60,10 @@ class CounterBend:
         self.baseline_since = None
         self.force = CORRECTION_KGF if self.known else INITIAL_PROBE_KGF
 
+    def interrupt(self):
+        self.pull_start = self.release_start = self.baseline_since = None
+        self.window.clear()
+
     def score(self, pose):
         return math.hypot(*pose[:2], *(v * math.sqrt(self.orientation_weight) for v in pose[2:]))
 
@@ -79,7 +83,8 @@ class CounterBend:
             if loaded and self.loaded_at is None:
                 self.loaded_at = now
             plateau = self.loaded_at is not None and now - max(self.loaded_at, self.improved) >= 0.7
-            if not (finishing or plateau or age >= MAX_PULSE_S or error <= 1):
+            worsening = self.smoothed > self.before + 0.5
+            if not (finishing or worsening or plateau or age >= MAX_PULSE_S or error <= 1):
                 return "pull", pull(self.tendon, self.force)
             self.pull_start = None
             self.release_start = now
@@ -211,11 +216,8 @@ def home(
                 continue
             if not controller.ready():
                 stable.clear()
-                if sequence.pull_start is not None or sequence.release_start is not None:
-                    controller.command(TARGETS, True, min(0.15, deadline - now))
-                    return "controller feedback lost during actuation", first, last
-                sequence.window.clear()
-                sequence.baseline_since = None
+                sequence.interrupt()
+                verification_started = None
                 if last is not None:
                     # Native PID pauses stale channels while it waits for fresh readings.
                     controller.command(TARGETS, True, min(0.15, deadline - now))
