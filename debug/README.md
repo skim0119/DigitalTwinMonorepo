@@ -103,4 +103,6 @@ older than one second are blank; pose age indicates when a pose is stale.
 Motor indices are zero-based. The readings are latest available snapshots,
 not hardware-synchronized measurements. Manual Xbox control does not enforce
 load-cell force limits. On Linux, the terminal reports the recorder process's
-current resident memory (RSS) every five seconds.
+current resident memory (RSS) and CSV file size every five seconds.
+The same report shows when the latest `/poses` message arrived and the body
+names it contained, or says it is waiting for messages.

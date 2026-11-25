@@ -2,6 +2,7 @@
 
 import csv
 import math
+import os
 import socket
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ class Recording:
 
         self.motors = motors
         self.poses = {}
+        self.pose_message_time = None
+        self.pose_body_names = []
         self.loads = [(0, None)] * 6
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
@@ -57,6 +60,8 @@ class Recording:
 
     def receive(self, msg):
         now = time.monotonic()
+        self.pose_message_time = now
+        self.pose_body_names = [body.name for body in msg.poses]
         stamp = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         for body in msg.poses:
             if body.name.startswith("arm_"):
@@ -74,17 +79,26 @@ class Recording:
         self.write_sample(now)
         if now >= self.next_memory_report:
             self.next_memory_report = now + MEMORY_REPORT_INTERVAL_S
-            self.report_memory()
+            self.report_usage(now)
 
-    def report_memory(self):
+    def report_usage(self, now):
+        memory = "unavailable"
         try:
             for line in Path("/proc/self/status").read_text().splitlines():
                 if line.startswith("VmRSS:"):
                     kib = int(line.split()[1])
-                    print(f"Recorder memory (RSS): {kib / 1024:.1f} MiB", flush=True)
-                    return
+                    memory = f"{kib / 1024:.1f} MiB"
+                    break
         except (OSError, ValueError, IndexError):
             pass
+        file_size = os.fstat(self.file.fileno()).st_size / 1024
+        print(f"Recorder memory (RSS): {memory} | CSV size: {file_size:.1f} KiB", flush=True)
+        if self.pose_message_time is None:
+            print("Poses: waiting for messages on /poses", flush=True)
+        else:
+            age = now - self.pose_message_time
+            names = ", ".join(self.pose_body_names) or "none"
+            print(f"Poses: last /poses message {age:.1f}s ago; bodies: {names}", flush=True)
 
     def read_loads(self):
         """Read available HX711 replies and request the next snapshot."""

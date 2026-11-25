@@ -1,4 +1,6 @@
 import sys
+import csv
+import io
 import tempfile
 import types
 import unittest
@@ -12,12 +14,43 @@ from xbox_controller_recording import Recording
 class RecordingTest(unittest.TestCase):
     def test_memory_report_uses_current_rss_and_handles_missing_proc(self):
         recording = Recording()
-        with patch.object(Path, "read_text", return_value="Name: python\nVmRSS:\t2048 kB\n"), \
-                patch("builtins.print") as output:
-            recording.report_memory()
-            output.assert_called_once_with("Recorder memory (RSS): 2.0 MiB", flush=True)
-        with patch.object(Path, "read_text", side_effect=OSError):
-            recording.report_memory()
+        recording.pose_message_time = None
+        with tempfile.TemporaryFile(mode="w+") as recording.file:
+            recording.file.write("x" * 1024)
+            recording.file.flush()
+            with patch.object(Path, "read_text", return_value="Name: python\nVmRSS:\t2048 kB\n"), \
+                    patch("builtins.print") as output:
+                recording.report_usage(10)
+                output.assert_any_call(
+                    "Recorder memory (RSS): 2.0 MiB | CSV size: 1.0 KiB", flush=True)
+                output.assert_any_call("Poses: waiting for messages on /poses", flush=True)
+            with patch.object(Path, "read_text", side_effect=OSError), patch("builtins.print") as output:
+                recording.report_usage(10)
+                output.assert_any_call(
+                    "Recorder memory (RSS): unavailable | CSV size: 1.0 KiB", flush=True)
+
+    def test_matching_poses_are_written_to_csv(self):
+        recording = Recording()
+        recording.poses = {}
+        recording.loads = [(0, None)] * 6
+        recording.started = 0
+        recording.motors = MagicMock()
+        recording.motors.status.return_value = [(0, 0, 0)] * 6
+        recording.file = io.StringIO()
+        recording.writer = csv.writer(recording.file)
+        pose = types.SimpleNamespace(
+            position=types.SimpleNamespace(x=1, y=2, z=3),
+            orientation=types.SimpleNamespace(x=0, y=0, z=0, w=1))
+        msg = types.SimpleNamespace(
+            header=types.SimpleNamespace(stamp=types.SimpleNamespace(sec=10, nanosec=20)),
+            poses=[types.SimpleNamespace(name=name, pose=pose) for name in ("arm_tip", "other")])
+        with patch("xbox_controller_recording.time.monotonic", return_value=5):
+            recording.receive(msg)
+        recording.write_sample(5.1)
+        row = next(csv.reader(io.StringIO(recording.file.getvalue())))
+        self.assertEqual(row[2], "arm_tip")
+        self.assertEqual(row[3], "10000000020")
+        self.assertEqual(row[5:12], ["1", "2", "3", "0", "0", "0", "1"])
 
     def test_executor_uses_recording_context_and_is_shut_down(self):
         context = MagicMock()
