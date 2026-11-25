@@ -55,21 +55,14 @@ class CounterBend:
         self.reverse = False
         self.sweep_start = None
         self.before = None
-        self.interruptions = 0
-        self.best_settled = math.inf
         self.pull_start = self.release_start = None
         self.window = deque()
         self.baseline_since = None
         self.force = CORRECTION_KGF if self.known else INITIAL_PROBE_KGF
 
     def interrupt(self):
-        active = self.pull_start is not None or self.release_start is not None
-        if active:
-            self.interruptions += 1
-            self.before = None  # No completed trial to score or reverse.
         self.pull_start = self.release_start = self.baseline_since = None
         self.window.clear()
-        return active
 
     def score(self, pose):
         return math.hypot(*pose[:2], *(v * math.sqrt(self.orientation_weight) for v in pose[2:]))
@@ -124,14 +117,7 @@ class CounterBend:
         if finishing:
             return "recover", TARGETS
 
-        if self.interruptions >= 2:
-            return "repeated feedback interruption", TARGETS
-        self.best_settled = min(self.best_settled, score)
-        if self.force == PROBE_KGF and score > self.best_settled + max(0.5, 0.2 * self.best_settled):
-            return "settled pose regressed", TARGETS
-
         if self.before is not None:
-            self.interruptions = 0
             gained = self.before - score >= 0.2
             if not gained and not self.reverse and not self.known:
                 self.reverse = True
@@ -230,17 +216,11 @@ def home(
                 continue
             if not controller.ready():
                 stable.clear()
-                interrupted = sequence.interrupt()
+                sequence.interrupt()
                 verification_started = None
                 if last is not None:
                     # Native PID pauses stale channels while it waits for fresh readings.
                     controller.command(TARGETS, True, min(0.15, deadline - now))
-                if interrupted:
-                    x, y, z = pose[1][:3]
-                    tilt = math.hypot(*pose[1][3:]) if tilt_tol_deg is not None else None
-                    write_row((now - start, "pose" if tilt is not None else "position",
-                               "feedback-interrupted", x, y, z, math.hypot(x, y), tilt,
-                               *TARGETS, *(None,) * 6))
                 continue
             xyz = pose[1][:3]
             tilt_xy = pose[1][3:]
@@ -276,7 +256,7 @@ def home(
         last = (now, lateral, z, forces, tilt)
         if phase == "verify" and verification_started is None:
             verification_started = now
-        if phase in ("no retained improvement", "repeated feedback interruption", "settled pose regressed"):
+        if phase == "no retained improvement":
             return phase, first, last
         if phase != "verify":
             verification_started = None
