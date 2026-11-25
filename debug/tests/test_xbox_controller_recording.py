@@ -43,14 +43,24 @@ class RecordingTest(unittest.TestCase):
             orientation=types.SimpleNamespace(x=0, y=0, z=0, w=1))
         msg = types.SimpleNamespace(
             header=types.SimpleNamespace(stamp=types.SimpleNamespace(sec=10, nanosec=20)),
-            poses=[types.SimpleNamespace(name=name, pose=pose) for name in ("arm_tip", "other")])
+            poses=[types.SimpleNamespace(name=name, pose=pose) for name in ("arm_base", "arm_tip", "other")])
         with patch("xbox_controller_recording.time.monotonic", return_value=5):
             recording.receive(msg)
         recording.write_sample(5.1)
+        rows = list(csv.reader(io.StringIO(recording.file.getvalue())))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(len(row), 38)
+        for offset in (2, 11):
+            self.assertEqual(row[offset], "10000000020")
+            self.assertEqual(row[offset + 2:offset + 9], ["1", "2", "3", "0", "0", "0", "1"])
+        del recording.poses["arm_base"]
+        recording.file = io.StringIO()
+        recording.writer = csv.writer(recording.file)
+        recording.write_sample(5.2)
         row = next(csv.reader(io.StringIO(recording.file.getvalue())))
-        self.assertEqual(row[2], "arm_tip")
-        self.assertEqual(row[3], "10000000020")
-        self.assertEqual(row[5:12], ["1", "2", "3", "0", "0", "0", "1"])
+        self.assertEqual(row[2:11], [""] * 9)
+        self.assertEqual(row[11], "10000000020")
 
     def test_executor_uses_recording_context_and_is_shut_down(self):
         context = MagicMock()

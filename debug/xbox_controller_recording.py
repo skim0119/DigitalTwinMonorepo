@@ -13,6 +13,8 @@ from xbox_controller_6motors import main
 SAMPLE_INTERVAL_S = 0.1
 MAX_LOAD_AGE_S = 1.0
 MEMORY_REPORT_INTERVAL_S = 5.0
+POSE_BODIES = ("arm_base", "arm_tip")
+POSE_FIELDS = ("timestamp_ns", "age_s", "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw")
 
 
 class Recording:
@@ -41,8 +43,8 @@ class Recording:
         self.socket.connect(("127.0.0.1", 5050))
         self.file = self.output.open("x", newline="")
         self.writer = csv.writer(self.file)
-        self.writer.writerow(["timestamp_utc", "elapsed_s", "body", "pose_timestamp_ns", "pose_age_s",
-                              "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw",
+        self.writer.writerow(["timestamp_utc", "elapsed_s",
+                              *(f"{body}_{field}" for body in POSE_BODIES for field in POSE_FIELDS),
                               *(f"load_{i}_kgf" for i in range(6)),
                               *(f"load_{i}_age_s" for i in range(6)),
                               *(f"motor_{i}_steps" for i in range(6))])
@@ -64,7 +66,7 @@ class Recording:
         self.pose_body_names = [body.name for body in msg.poses]
         stamp = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         for body in msg.poses:
-            if body.name.startswith("arm_"):
+            if body.name in POSE_BODIES:
                 p, q = body.pose.position, body.pose.orientation
                 self.poses[body.name] = (now, stamp, (p.x, p.y, p.z, q.x, q.y, q.z, q.w))
 
@@ -127,10 +129,14 @@ class Recording:
         loads = [value if age != "" and age <= MAX_LOAD_AGE_S else ""
                  for age, (_, value) in zip(ages, self.loads)]
         steps = [status[1] for status in self.motors.status()]
-        poses = self.poses.items() or [("", (now, "", ("",) * 7))]
-        for name, (received, pose_stamp, pose) in poses:
-            self.writer.writerow([stamp, now - self.started, name, pose_stamp,
-                                  now - received if name else "", *pose, *loads, *ages, *steps])
+        pose_values = []
+        for name in POSE_BODIES:
+            if name in self.poses:
+                received, pose_stamp, pose = self.poses[name]
+                pose_values.extend((pose_stamp, now - received, *pose))
+            else:
+                pose_values.extend([""] * len(POSE_FIELDS))
+        self.writer.writerow([stamp, now - self.started, *pose_values, *loads, *ages, *steps])
         self.file.flush()
 
     def finish(self):

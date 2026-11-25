@@ -95,9 +95,10 @@ python3 debug/xbox_controller_recording.py --output output/xbox_recording.csv
 ```
 
 The output must be a new file in an existing directory. Press Ctrl+C to stop.
-The CSV is flushed about every 0.1 seconds and has one row per `arm_*` rigid
-body per sample; before any pose arrives, a row has empty pose fields. Rows
-contain UTC and elapsed timestamps, the source ROS pose timestamp and age,
+The CSV is flushed about every 0.1 seconds and has one row per sample, with
+separate pose columns for `arm_base` and `arm_tip`. Each body's fields are
+empty until its first pose arrives. Other bodies are not saved. Rows contain
+UTC and elapsed timestamps, each source ROS pose timestamp and age,
 six HX711 loads in kgf and their ages, and six motor step positions. Loads
 older than one second are blank; pose age indicates when a pose is stale.
 Motor indices are zero-based. The readings are latest available snapshots,
