@@ -11,6 +11,7 @@ from xbox_controller_6motors import main
 
 SAMPLE_INTERVAL_S = 0.1
 MAX_LOAD_AGE_S = 1.0
+MEMORY_REPORT_INTERVAL_S = 5.0
 
 
 class Recording:
@@ -25,6 +26,7 @@ class Recording:
     def start(self, motors):
         import rclpy
         from motion_capture_tracking_interfaces.msg import NamedPoseArray
+        from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import qos_profile_sensor_data
         from rclpy.signals import SignalHandlerOptions
 
@@ -45,8 +47,11 @@ class Recording:
         rclpy.init(context=self.context, signal_handler_options=SignalHandlerOptions.NO)
         self.node = rclpy.create_node("xbox_controller_recording", context=self.context)
         self.node.create_subscription(NamedPoseArray, "/poses", self.receive, qos_profile_sensor_data)
+        self.executor = SingleThreadedExecutor(context=self.context)
+        self.executor.add_node(self.node)
         self.started = time.monotonic()
         self.next_sample = self.started
+        self.next_memory_report = self.started
         print(f"Recording to {self.output}; press Ctrl+C to stop.", flush=True)
         return self.pause
 
@@ -59,16 +64,27 @@ class Recording:
                 self.poses[body.name] = (now, stamp, (p.x, p.y, p.z, q.x, q.y, q.z, q.w))
 
     def pause(self, seconds):
-        import rclpy
-
         time.sleep(seconds)
-        rclpy.spin_once(self.node, timeout_sec=0)
+        self.executor.spin_once(timeout_sec=0)
         now = time.monotonic()
         if now < self.next_sample:
             return
         self.next_sample = now + SAMPLE_INTERVAL_S
         self.read_loads()
         self.write_sample(now)
+        if now >= self.next_memory_report:
+            self.next_memory_report = now + MEMORY_REPORT_INTERVAL_S
+            self.report_memory()
+
+    def report_memory(self):
+        try:
+            for line in Path("/proc/self/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    kib = int(line.split()[1])
+                    print(f"Recorder memory (RSS): {kib / 1024:.1f} MiB", flush=True)
+                    return
+        except (OSError, ValueError, IndexError):
+            pass
 
     def read_loads(self):
         """Read available HX711 replies and request the next snapshot."""
@@ -89,6 +105,7 @@ class Recording:
             self.socket.send(b"hx711-fast")
         except ConnectionRefusedError:
             pass
+
     def write_sample(self, now):
         stamp = datetime.now(timezone.utc).isoformat()
         ages = [now - ns / 1e9 if ns and 0 <= now - ns / 1e9 else ""
@@ -103,6 +120,8 @@ class Recording:
         self.file.flush()
 
     def finish(self):
+        if hasattr(self, "executor"):
+            self.executor.shutdown()
         if hasattr(self, "node"):
             self.node.destroy_node()
         if hasattr(self, "context"):
