@@ -22,12 +22,10 @@ MAX_RUN_S = 100.0
 SETTLE_S = 0.5
 FORCE_TOL_KGF = 0.02
 POSE_MAX_AGE_S = 0.25
-BASELINE_S = 0.8
 PAIRS = ((0, 5), (1, 3), (2, 4))
 OPPOSITE = {a: b for pair in PAIRS for a, b in (pair, pair[::-1])}
 PAYOUT_KGF = 0.05
-PROBE_S = 3.5
-PROBE_ON_S = 2.0
+DEFAULT_RELEASE_S = 3.0
 INITIAL_PROBE_KGF = 1.0
 PROBE_KGF = 0.35
 CORRECTION_KGF = 0.65
@@ -48,112 +46,98 @@ def pull(tendon, force):
 
 
 class CounterBend:
-    def __init__(self, known_tendon=None, orientation_weight=2.0):
+    def __init__(self, known_tendon=None, orientation_weight=2.0, release_s=DEFAULT_RELEASE_S):
         self.orientation_weight = orientation_weight
-        self.known_tendon = known_tendon
-        self.pulse_start = None
-        self.pulse_xy = None
-        self.start = None
-        self.probe_starts = {}
-        self.responses = {}
+        self.release_s = release_s
+        self.directions = [known_tendon] if known_tendon is not None else [a for a, _ in PAIRS]
+        self.known = known_tendon is not None
+        self.index = 0
+        self.reverse = False
+        self.sweep_start = None
+        self.before = None
+        self.pull_start = self.release_start = None
         self.window = deque()
-        self.recovery_start = None
-        self.failed_pairs = set()
-        self.selected = None
-        self.probe_force = INITIAL_PROBE_KGF
-
-    def inner(self, a, b):
-        return sum(x * y * (self.orientation_weight if i >= 2 else 1.0)
-                   for i, (x, y) in enumerate(zip(a, b)))
+        self.baseline_since = None
+        self.force = CORRECTION_KGF if self.known else INITIAL_PROBE_KGF
 
     def score(self, pose):
-        return math.sqrt(self.inner(pose, pose))
+        return math.hypot(*pose[:2], *(v * math.sqrt(self.orientation_weight) for v in pose[2:]))
 
-    def command(self, now, deadline, xyz, at_baseline, stamp):
-        if self.start is None:
-            self.start = now
-        elapsed = now - self.start
-        if elapsed < BASELINE_S:
-            return "baseline", TARGETS
-        final_s = 4.0 if self.known_tendon is not None else FINAL_S
-        finishing = deadline - now <= final_s + SETTLE_S
-
-        probe_time = elapsed - BASELINE_S
-        pair_index = int(probe_time / PROBE_S)
-        if self.known_tendon is None and pair_index < len(PAIRS) and not finishing:
-            tendon, opposite = PAIRS[pair_index]
-            if probe_time - pair_index * PROBE_S < PROBE_ON_S:
-                self.probe_starts.setdefault(tendon, xyz)
-                return "probe", pull(tendon, self.probe_force)
-            if tendon in self.probe_starts and tendon not in self.responses:
-                self.responses[tendon] = tuple(
-                    a - b for a, b in zip(xyz, self.probe_starts[tendon])
-                )
-                # Reversing a pair is assumed to reverse its local bending response.
-                self.responses[opposite] = tuple(-v for v in self.responses[tendon])
-            return "release", TARGETS
-
+    def command(self, now, deadline, xyz, forces, stamp):
         error = residual(xyz)
-        if self.pulse_start is not None:
-            duration = min(MAX_PULSE_S, 0.5 * residual(self.pulse_xy))
-            if (not finishing and now - self.pulse_start < duration and error > 1.0
-                    and self.score(xyz) <= self.score(self.pulse_xy) + 2.0
-                    and self.inner(xyz, self.pulse_xy) > 0):
-                return "counter-bend", pull(self.selected, CORRECTION_KGF)
-            self.pulse_start = None
-            self.recovery_start = now
+        score = self.score(xyz)
+        finishing = deadline - now <= self.release_s + FINAL_S
+        if self.pull_start is not None:
+            age = now - self.pull_start
+            if stamp > self.last_stamp:
+                self.smoothed += 0.3 * (score - self.smoothed)
+                self.last_stamp = stamp
+                if self.smoothed < self.best - 0.05:
+                    self.best = self.smoothed
+                    self.improved = now
+            loaded = forces[self.tendon] >= TARGETS[0] + 0.75 * (self.force - TARGETS[0])
+            if loaded and self.loaded_at is None:
+                self.loaded_at = now
+            plateau = self.loaded_at is not None and now - max(self.loaded_at, self.improved) >= 0.7
+            if not (finishing or plateau or age >= MAX_PULSE_S or error <= 1):
+                return "pull", pull(self.tendon, self.force)
+            self.pull_start = None
+            self.release_start = now
+        if self.release_start is not None:
+            remaining = 1 - (now - self.release_start) / self.release_s
+            if remaining > 0:
+                return "slow-release", [b + remaining * (a-b) for a,b in
+                                        zip(pull(self.tendon, self.force), TARGETS)]
+            self.release_start = None
 
+        at_baseline = all(abs(f-b) <= FORCE_TOL_KGF for f,b in zip(forces,TARGETS))
         # Compare poses only under baseline load and after motion has settled.
-        if self.recovery_start is None:
-            self.recovery_start = now
         if not at_baseline:
+            self.baseline_since = None
             self.window.clear()
-        elif not self.window or stamp > self.window[-1][0]:
+            return "recover-tension", TARGETS
+        if self.baseline_since is None:
+            self.baseline_since = stamp
+        if not self.window or stamp > self.window[-1][0]:
             self.window.append((stamp, xyz))
         while len(self.window) > 1 and stamp - self.window[1][0] >= SETTLE_S:
             self.window.popleft()
         settled = (self.window and stamp - self.window[0][0] >= SETTLE_S
                    and all(math.dist(point, xyz) <= 0.2 for _, point in self.window))
-        if not settled or now - self.recovery_start < RETRY_SETTLE_S:
-            if now - self.recovery_start >= 8.0:
-                return "recovery timeout", TARGETS
-            return "recover", TARGETS
+        if not settled or stamp - self.baseline_since < RETRY_SETTLE_S:
+            return "recover-pose", TARGETS
         if error <= 1.0:
             return "verify", TARGETS
 
         if finishing:
             return "recover", TARGETS
 
-        if self.pulse_xy is not None:
-            change = tuple(a-b for a, b in zip(xyz, self.pulse_xy))
-            self.responses[self.selected] = change
-            if self.score(self.pulse_xy) - self.score(xyz) < 0.2:
-                self.failed_pairs.update((self.selected, OPPOSITE[self.selected]))
-                self.selected = None
-            self.pulse_xy = None
-        if self.selected is None:
-            if self.known_tendon is not None:
-                if self.known_tendon in self.failed_pairs:
-                    return "no retained improvement", TARGETS
-                self.selected = self.known_tendon
+        if self.before is not None:
+            gained = self.before - score >= 0.2
+            if not gained and not self.reverse and not self.known:
+                self.reverse = True
             else:
-                candidates = [(-self.inner(xyz, response), tendon)
-                              for tendon, response in self.responses.items()
-                              if tendon not in self.failed_pairs]
-                if not candidates or max(candidates)[0] <= 0:
-                    self.start = now
-                    self.responses.clear()
-                    self.probe_starts.clear()
-                    self.failed_pairs.clear()
-                    self.probe_force = PROBE_KGF
-                    self.window.clear()
-                    self.recovery_start = None
-                    return "baseline", TARGETS
-                self.selected = max(candidates)[1]
-        self.pulse_start = now
-        self.pulse_xy = xyz
+                if gained:
+                    self.directions[self.index] = self.tendon
+                self.reverse = False
+                self.index = (self.index + 1) % len(self.directions)
+                if self.index == 0:
+                    if self.sweep_start - score < 0.2:
+                        return "no retained improvement", TARGETS
+                    self.sweep_start = score
+                    if not self.known:
+                        self.force = PROBE_KGF
+        if self.sweep_start is None:
+            self.sweep_start = score
+        self.tendon = self.directions[self.index]
+        if self.reverse:
+            self.tendon = OPPOSITE[self.tendon]
+        self.before = self.best = self.smoothed = score
+        self.last_stamp = stamp
+        self.pull_start = self.improved = now
+        self.loaded_at = self.baseline_since = None
         self.window.clear()
-        return "counter-bend", pull(self.selected, CORRECTION_KGF)
+        return "pull", pull(self.tendon, self.force)
 
 
 def positive_float(value):
@@ -200,6 +184,7 @@ def home(
     known_tendon=None,
     tilt_tol_deg=None,
     orientation_weight=2.0,
+    release_s=DEFAULT_RELEASE_S,
 ):
     start = deadline - MAX_RUN_S
     first = last = None
@@ -208,7 +193,7 @@ def home(
     minimum_verification = 4.0 if known_tendon is not None else RETRY_SETTLE_S
     next_sample = start
     # Joint homing needs measured position and tilt responses for each antagonistic pair.
-    sequence = CounterBend(known_tendon if tilt_tol_deg is None else None, orientation_weight)
+    sequence = CounterBend(known_tendon if tilt_tol_deg is None else None, orientation_weight, release_s)
     while (remaining := deadline - time.monotonic()) > 0:
         pose = poll_pose(min(0.05, remaining))
         now = time.monotonic()
@@ -226,6 +211,11 @@ def home(
                 continue
             if not controller.ready():
                 stable.clear()
+                if sequence.pull_start is not None or sequence.release_start is not None:
+                    controller.command(TARGETS, True, min(0.15, deadline - now))
+                    return "controller feedback lost during actuation", first, last
+                sequence.window.clear()
+                sequence.baseline_since = None
                 if last is not None:
                     # Native PID pauses stale channels while it waits for fresh readings.
                     controller.command(TARGETS, True, min(0.15, deadline - now))
@@ -236,10 +226,9 @@ def home(
             if tilt_tol_deg is not None:
                 feedback += tuple(value / tilt_tol_deg for value in tilt_xy)
             forces = tuple(channel[0] for channel in controller.pid_status())
-            at_baseline = len(forces) == 6 and all(
-                abs(f - 0.1) <= FORCE_TOL_KGF for f in forces
-            )
-            phase, targets = sequence.command(now, deadline, feedback, at_baseline, pose[0])
+            if len(forces) != 6 or not all(math.isfinite(f) for f in forces):
+                return "invalid load-cell reading", first, last
+            phase, targets = sequence.command(now, deadline, feedback, forces, pose[0])
             controller.command(targets, True, min(0.15, deadline - now))
         except RuntimeError as error:
             return f"controller fault: {error}", first, last
@@ -265,7 +254,7 @@ def home(
         last = (now, lateral, z, forces, tilt)
         if phase == "verify" and verification_started is None:
             verification_started = now
-        if phase in ("recovery timeout", "no retained improvement"):
+        if phase == "no retained improvement":
             return phase, first, last
         if phase != "verify":
             verification_started = None
@@ -297,6 +286,85 @@ def home(
     return "timeout", first, last
 
 
+def save_diagnostics(path, result, elapsed, xy_tol, tilt_tol, orientation_weight=2.0):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    from textwrap import fill
+
+    with path.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    fig = Figure(figsize=(12, 11), layout="constrained")
+    FigureCanvasAgg(fig)
+    fig.suptitle(f"{path.stem}  |  {elapsed:.2f} s\n{fill(result, 95)}")
+    if rows:
+        def values(key):
+            return [float(row[key]) if row[key] else math.nan for row in rows]
+
+        t = values("elapsed_s")
+        labels = ["Lateral (mm)"] + (["Tilt (deg)"] if tilt_tol is not None else [])
+        axes = fig.subplots(len(labels) + 5, sharex=True)
+        for ax, label, key, limit in zip(axes, labels, ("lateral_mm", "tip_tilt_deg"),
+                                         (xy_tol, tilt_tol)):
+            samples = values(key)
+            ax.plot(t, samples, ".-", markersize=2)
+            if key == "lateral_mm":
+                best = min((i for i, v in enumerate(samples) if math.isfinite(v)),
+                           key=samples.__getitem__, default=None)
+                if best is not None:
+                    ax.plot(t[best], samples[best], "o", color="tab:red",
+                            label=f"Min {samples[best]:.2f} mm at {t[best]:.1f} s")
+            ax.axhline(limit, color="gray", linestyle="--", label=f"Tolerance {limit:g}")
+            ax.legend(loc="upper right")
+            ax.set_ylabel(label)
+        score_ax = axes[len(labels)]
+        scores = [math.hypot(float(row["lateral_mm"]) / xy_tol,
+                             math.sqrt(orientation_weight) * float(row["tip_tilt_deg"]) / tilt_tol
+                             if tilt_tol else 0.0) for row in rows]
+        score_ax.plot(t, scores, color="0.6")
+        score_ax.set_ylabel("Weighted error")
+        starts = [i for i, row in enumerate(rows) if row["phase"] == "pull"
+                  and (i == 0 or rows[i-1]["phase"] != "pull")]
+        for n, start in enumerate(starts):
+            end = next((i for i in range(start+1, len(rows)) if rows[i]["phase"] != "pull"), len(rows))
+            best = min(range(start, end), key=scores.__getitem__)
+            next_start = starts[n+1] if n+1 < len(starts) else len(rows)
+            settled = next((i for i in range(end, next_start)
+                            if rows[i]["phase"] in ("verify", "no retained improvement")), next_start)
+            for i, marker, label in ((start, "o", "Before"), (best, "^", "Best under pull"),
+                                     (settled, "x", "Settled")):
+                if i < len(rows):
+                    score_ax.scatter(t[i], scores[i], marker=marker,
+                                     color={"o":"tab:blue","^":"tab:green","x":"tab:red"}[marker],
+                                     label=label if n == 0 else None)
+        if starts:
+            score_ax.legend(loc="upper right", ncols=3, fontsize=8)
+        phase_ax = axes[len(labels)+1]
+        phases = list(dict.fromkeys(row["phase"] for row in rows))
+        indices = [phases.index(row["phase"]) for row in rows]
+        phase_ax.step(t, indices, where="post", color="0.4")
+        phase_ax.scatter(t, indices, s=3)
+        phase_ax.set_yticks(range(len(phases)), phases, fontsize=8)
+        for ax, pair in zip(axes[-3:], PAIRS):
+            ax.axhspan(TARGETS[0] - FORCE_TOL_KGF, TARGETS[0] + FORCE_TOL_KGF,
+                       color="0.9")
+            for color, motor in zip(("tab:blue", "tab:orange"), pair):
+                ax.plot(t, values(f"tendon_{motor+1}_kgf"), ".-", color=color,
+                        markersize=2, label=f"Motor {motor} measured")
+                ax.step(t, values(f"target_{motor+1}_kgf"), where="post",
+                        color=color, linestyle="--", label=f"Motor {motor} target")
+            ax.set_ylabel("Tension (kgf)")
+            ax.legend(loc="upper right", ncols=2, fontsize=8)
+        axes[-1].set_xlabel("Elapsed time (s)")
+        for ax in axes:
+            ax.set_xlim(0, max(elapsed, t[-1], 0.1))
+            ax.grid(axis="x", alpha=0.2)
+    else:
+        fig.text(0.5, 0.5, "No complete samples recorded", ha="center")
+    output = path.with_suffix(".png")
+    fig.savefig(output, dpi=140)
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / "pins.json")
@@ -325,6 +393,8 @@ def main():
     parser.add_argument("--tilt-tol-deg", type=positive_float, default=5.0)
     parser.add_argument("--orientation-weight", type=positive_float, default=5.0,
                         help="Weight on squared tilt error relative to squared lateral error, each normalized by its tolerance (default: 2).")
+    parser.add_argument("--release-s", type=positive_float, default=DEFAULT_RELEASE_S,
+                        help="Seconds to ramp both pair targets back to baseline (default: 3).")
     args = parser.parse_args()
     tilt_tol_deg = args.tilt_tol_deg if args.tip_axis else None
     known_tendon = None if args.known_tendon is None else args.known_tendon - 1
@@ -411,6 +481,7 @@ def main():
                         known_tendon,
                         tilt_tol_deg,
                         args.orientation_weight,
+                        args.release_s,
                     )
                 finally:
                     controller.stop()
@@ -434,6 +505,10 @@ def main():
     else:
         print("No complete mocap and load-cell measurements.")
         print("Homing requires arm_base and a valid arm_tip pose in one frame.")
+    try:
+        print(f"Diagnostic plot: {save_diagnostics(path, result, elapsed, args.xy_tol_mm, tilt_tol_deg, args.orientation_weight)}")
+    except Exception as error:
+        print(f"Could not export diagnostic plot: {error}", file=sys.stderr)
     return 0 if result == "homed" else 1
 
 
