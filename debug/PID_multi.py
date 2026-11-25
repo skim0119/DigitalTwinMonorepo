@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import socket
 import sys
 import time
 from dataclasses import dataclass, field
@@ -53,6 +54,48 @@ LOG_CSV_TEMPLATE = "pid_force_log_{name}.csv"
 COMBINED_PLOT_PNG = "pid_force_plot_all_motors.png"
 
 CHANNEL_COLORS = ["#3B6FA0", "#D9534F", "#5CB85C", "#F0AD4E", "#9B59B6", "#1ABC9C"]
+
+
+class SensorRecorder:
+    """Record the streamer's six unfiltered loads alongside commanded motor steps."""
+
+    def __init__(self, path, port):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setblocking(False)
+        self.socket.connect(("127.0.0.1", port))
+        try:
+            self.file = path.open("x", newline="")
+        except BaseException:
+            self.socket.close()
+            raise
+        self.writer = csv.writer(self.file)
+        self.writer.writerow(["elapsed_s", *(f"load_{i}_kgf" for i in range(6)),
+                              *(f"load_{i}_age_s" for i in range(6)),
+                              *(f"motor_{i}_commanded_steps" for i in range(6))])
+        self.readings = [(0, 0.0)] * 6
+
+    def sample(self, elapsed, now, motion):
+        try:
+            while True:
+                lines = self.socket.recv(512).decode("ascii").splitlines()
+                readings = [(int(stamp), float(load)) for stamp, load in (line.split() for line in lines)]
+                if len(readings) == 6 and all(stamp >= 0 and math.isfinite(load) for stamp, load in readings):
+                    self.readings = readings
+        except (BlockingIOError, ConnectionRefusedError, UnicodeError, ValueError):
+            pass
+        try:
+            self.socket.send(b"hx711-fast")
+        except ConnectionRefusedError:
+            pass
+        ages = [now - stamp / 1e9 if stamp and 0 <= now - stamp / 1e9 else ""
+                for stamp, _ in self.readings]
+        loads = [load if age != "" and age <= 1.0 else ""
+                 for age, (_, load) in zip(ages, self.readings)]
+        self.writer.writerow([elapsed, *loads, *ages, *(status[1] for status in motion)])
+
+    def close(self):
+        self.socket.close()
+        self.file.close()
 
 
 def save_log_csv(channel, csv_path):
@@ -167,15 +210,19 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
     (run_dir / "run.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
     print(f"Run output: {run_dir}")
 
+    port = int(os.getenv("SPIROB_MONITOR_PORT", "5050"))
     controller = open_controller(
         settings, [(-sys.maxsize, sys.maxsize)] * 6,
-        port=int(os.getenv("SPIROB_MONITOR_PORT", "5050")),
+        port=port,
         max_force=tension_limit,
         max_rate=max_rate, motor=motor, skip_motor=skip_motor,
         max_tightening_steps=0 if tightening_limit is None else tightening_limit,
     )
     targets = [target if index in selected else 0.0 for index in range(6)]
+    recorder = None
     try:
+        if tuning is not None:
+            recorder = SensorRecorder(run_dir / "all_sensors.csv", port)
         startup_deadline = time.monotonic() + 5.0
         while not controller.ready():
             if time.monotonic() >= startup_deadline:
@@ -196,6 +243,8 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
                     targets[index] = target
             controller.command(targets, True, min(end - now, 2 * TELEMETRY_INTERVAL))
             status = controller.pid_status()
+            if recorder is not None:
+                recorder.sample(elapsed, now, controller.status())
             for index, channel in zip(selected, channels):
                 force, speed, *terms = status[index]
                 channel.log_terms.append(terms)
@@ -230,6 +279,8 @@ def main(motor=None, *, skip_motor=None, tuning=None, duration_s=None, config=DE
         print(f"\nTrial stopped: {message}")
     finally:
         controller.stop()
+        if recorder is not None:
+            recorder.close()
         for index, channel in zip(selected, channels):
             channel.tightening_steps = controller.tightening_steps(index)
             save_log_csv(channel, run_dir / LOG_CSV_TEMPLATE.format(name=channel.name))

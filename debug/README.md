@@ -45,6 +45,11 @@ python3 debug/PID_tune_motor.py --motor 0 --target-kg "$TARGET_KG" --seconds 3 \
 
 PID Multi and the one-shot tuner save timestamped CSVs, a force plot, and
 `run.json` with the effective settings and limits under root `output/`.
+The one-shot tuner also saves `all_sensors.csv`, containing all six raw HX711
+loads, their sample ages, and the six commanded step counters on one timeline.
+Missing or stale loads are blank. Only the selected motor is driven and
+protected by the trial's force limit; the other step counters reflect commands
+from this controller, not measured physical position.
 The tuner tests the supplied gains and prints metrics and a copy-ready `"pid"`
 entry. Gain selection and saving the entry in `pins.json` are manual. The run
 starts with a 0.1 kg baseline hold before moving to the requested targets.
