@@ -84,3 +84,22 @@ python3 debug/simple_cmdline_controller.py 0 forward --steps 25 --dry-run
 The jog prints the motor number, BCM pins, requested speed, and pulse count.
 It defaults to 100 pulses at 3 RPM. Remove `--dry-run` to send those pulses
 to the selected motor on the Pi.
+
+## Xbox recording
+
+With the HX711 streamer and ROS 2 `/poses` publisher running on the Pi (and the
+ROS workspace sourced), record while using the same Xbox controls:
+
+```sh
+python3 debug/xbox_controller_recording.py --output output/xbox_recording.csv
+```
+
+The output must be a new file in an existing directory. Press Ctrl+C to stop.
+The CSV is flushed about every 0.1 seconds and has one row per `arm_*` rigid
+body per sample; before any pose arrives, a row has empty pose fields. Rows
+contain UTC and elapsed timestamps, the source ROS pose timestamp and age,
+six HX711 loads in kgf and their ages, and six motor step positions. Loads
+older than one second are blank; pose age indicates when a pose is stale.
+Motor indices are zero-based. The readings are latest available snapshots,
+not hardware-synchronized measurements. Manual Xbox control does not enforce
+load-cell force limits.
