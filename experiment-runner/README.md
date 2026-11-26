@@ -33,6 +33,11 @@ Upload a table and save its result with:
 
     curl --fail --data-binary @spirob_force_actuation.csv 'http://spirob.local:8000/run?unit=N' -o result.csv
 
+For an entire run, omit a tendon column to leave its motor idle. Keep the remaining
+columns in tendon order. An empty cell stops tension control for that tendon
+until its next numeric entry. Zero commands zero tension. Load monitoring
+continues and the result CSV leaves the inactive target blank.
+
 For this service, one input unit commands one kgf, including when labeled N.
 The normal controller tension limit applies. Each result row contains an arm
 body pose and the latest preceding target, measured load and sample time for

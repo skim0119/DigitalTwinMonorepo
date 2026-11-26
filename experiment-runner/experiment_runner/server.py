@@ -51,7 +51,7 @@ def handler(runner, mapping):
                 raw = self.rfile.read(length)
                 if len(raw) != length:
                     raise ValueError("Incomplete upload")
-                table = parse_table(raw, "force", "kgf")
+                table = parse_table(raw, "force", "kgf", optional_tendons=True)
                 table = replace(table, values=tuple(tuple(row[i] for i in order) for row in table.values))
                 if not busy.acquire(False):
                     self.send_error(409, "Experiment already running")

@@ -35,27 +35,35 @@ class Table:
                     interpolation="hold" if self.mode == "force" else "linear")
 
 
-def parse_table(raw, mode, unit):
+def parse_table(raw, mode, unit, *, optional_tendons=False):
     if unit not in UNITS.get(mode, set()):
         raise ValueError("Choose force in N or kgf, or displacement in mm.")
     if not raw or len(raw) > MAX_CSV:
         raise ValueError("Upload a CSV smaller than 256 KiB.")
     try:
         reader = csv.reader(io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True)
-        if next(reader, None) != ["time_s", *TENDONS]:
-            raise ValueError("Expected time_s followed by tendon_1 through tendon_6.")
+        header = next(reader, [])
+        sparse = optional_tendons and mode == "force"
+        columns = header[1:]
+        expected = [name for name in TENDONS if name in columns] if sparse else list(TENDONS)
+        if not columns or header != ["time_s", *expected]:
+            raise ValueError("Expected time_s followed by tendon columns in tendon_1 through tendon_6 order.")
         times, values = [], []
         for line, row in enumerate(reader, 2):
+            if len(row) != len(header):
+                raise ValueError(f"Row {line} must match the CSV header.")
             try:
-                numbers = tuple(map(float, row))
+                stamp = float(row[0])
+                commands = {name: float(cell) for name, cell in zip(columns, row[1:])
+                            if not sparse or cell.strip()}
             except ValueError:
-                numbers = ()
-            if len(numbers) != 7 or not all(map(math.isfinite, numbers)):
-                raise ValueError(f"Row {line} must have seven finite numbers.")
-            stamp, *tendons = numbers
+                raise ValueError(f"Row {line} contains an invalid number.") from None
+            if not math.isfinite(stamp) or not all(map(math.isfinite, commands.values())):
+                raise ValueError(f"Row {line} contains a non-finite number.")
+            tendons = tuple(commands.get(name) for name in TENDONS)
             if (not times and stamp != 0) or (times and stamp <= times[-1]) or stamp > 600:
                 raise ValueError(f"Row {line}: time must start at zero, increase, and stay within 600 s.")
-            if mode == "force" and min(tendons) < 0:
+            if mode == "force" and any(x < 0 for x in commands.values()):
                 raise ValueError(f"Row {line}: force cannot be negative.")
             times.append(stamp)
             values.append(tuple(tendons))

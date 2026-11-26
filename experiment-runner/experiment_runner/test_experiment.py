@@ -16,6 +16,14 @@ EXAMPLE = HEADER + ZERO + b"0.15,2,0,0,0,0,0\n0.30,0,0,0,0,0,0\n"
 
 
 class TableTest(unittest.TestCase):
+    def test_sparse_force_upload(self):
+        raw = b"time_s,tendon_2,tendon_5\n0,1,\n1,,0\n2,,\n"
+        table = parse_table(raw, "force", "kgf", optional_tendons=True)
+        self.assertEqual(table.at(0.5), (None, 1, None, None, None, None))
+        self.assertEqual(table.at(1), (None, None, None, None, 0, None))
+        self.assertEqual(table.at(2), (None,) * 6)
+        Calibration.force_only({"max_tightening_steps": 10}, (2, 100)).validate(table)
+
     def test_modes_and_interpolation(self):
         self.assertEqual(parse_table(EXAMPLE, "force", "N").at(0.10)[0], 0)
         self.assertEqual(parse_table(EXAMPLE, "displacement", "mm").at(0.075)[0], 1)

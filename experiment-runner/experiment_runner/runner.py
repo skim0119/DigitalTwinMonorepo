@@ -39,9 +39,9 @@ class Simulated:
         self.position = 0
 
     def update(self, _table, values, _now, dt, _end):
-        target = sum(max(-100, min(100, value)) for value in values)
+        target = sum(max(-100, min(100, value)) for value in values if value is not None)
         self.position += (target - self.position) * min(1, dt * 8)
-        return [(value * 0.1, "", "") for value in values]
+        return [(value * 0.1 if value is not None else "", "", "") for value in values]
 
     def finish(self):
         pass

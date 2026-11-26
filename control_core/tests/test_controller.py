@@ -56,6 +56,16 @@ class NativeControllerTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "Native controller did not reach expected state")
             time.sleep(0.005)
 
+    def test_missing_force_target_idles_only_that_motor(self):
+        self.controller.command([0.2, None, None, None, None, None], True, 0.25)
+        self.wait_for(lambda: self.controller.status()[0][1] == 3)
+        self.assertEqual(self.controller.status()[1][1:], (0, 0))
+        self.controller.command([None, 0.2, None, None, None, None], True, 0.25)
+        self.wait_for(lambda: self.controller.status()[1][1] == 3)
+        self.assertEqual(self.controller.status()[0][1:], (3, 0))
+        self.controller.command([0, None, None, None, None, None], True, 0.25)
+        self.wait_for(lambda: self.controller.status()[0][1] < 3)
+
     def test_force_all_channels_and_position_bounds(self):
         self.controller.command([0.2] * 6, True, 0.2)
         self.wait_for(lambda: all(steps == 3 for _, steps, _ in self.controller.status()))

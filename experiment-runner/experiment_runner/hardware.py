@@ -47,7 +47,7 @@ class Calibration:
 
     def validate(self, table):
         if table.mode == "force":
-            if max(map(max, table.values)) / (GRAVITY if table.unit == "N" else 1) >= self.max_force_kgf:
+            if max((x for row in table.values for x in row if x is not None), default=0) / (GRAVITY if table.unit == "N" else 1) >= self.max_force_kgf:
                 raise ValueError("A force command meets or exceeds the configured tension limit.")
             return
         if self.step_limit is not None:
@@ -113,7 +113,7 @@ class Hardware:
 
     def update(self, table, values, _now, _dt, end):
         if table.mode == "force":
-            targets = [x / (GRAVITY if table.unit == "N" else 1) for x in values]
+            targets = [None if x is None else x / (GRAVITY if table.unit == "N" else 1) for x in values]
         else:
             targets = [min(high, max(low, round(x * scale)))
                        for x, scale, (low, high) in zip(values, self.calibration.steps_per_mm, self.bounds)]

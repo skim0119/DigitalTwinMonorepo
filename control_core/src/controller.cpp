@@ -107,6 +107,7 @@ struct Channel {
     double target_rate = 0, kff = 0;
     std::array<double, 3> gains{};
     bool force_mode = true;
+    bool has_target = true;
     bool reset_pid = false;
     double manual_rate = 0;
     long steps = 0, tightening_steps = 0;
@@ -254,7 +255,7 @@ class Controller {
                 filtered = dt <= 0 ? reading.force : filtered + alpha * (reading.force - filtered);
                 sample = reading.stamp;
                 channel.force = filtered;
-                if (channel.force_mode && expires != Clock::time_point{}) {
+                if (channel.has_target && channel.force_mode && expires != Clock::time_point{}) {
                     force_rate = alpha * channel.target_rate + (1 - alpha) * force_rate;
                     const double measured = std::max(0.0, filtered);
                     const double error = channel.target - measured;
@@ -297,7 +298,7 @@ class Controller {
                     terms[5] += weight * (terms[4] - terms[5]);
                 }
             }
-            if (expires == Clock::time_point{} || (manual && channel.manual_rate == 0)) {
+            if (!channel.has_target || expires == Clock::time_point{} || (manual && channel.manual_rate == 0)) {
                 channel.wake.wait_for(lock, 5ms);
                 continue;
             }
@@ -451,7 +452,7 @@ public:
         return true;
     }
 
-    void command(const std::array<double, 6>& targets, bool force_mode, double ttl,
+    void command(const std::array<std::optional<double>, 6>& targets, bool force_mode, double ttl,
                  const std::optional<std::array<double, 3>>& gains,
                  const std::optional<std::array<double, 6>>& target_rates) {
         if (manual) throw std::logic_error("Use manual_command in manual mode");
@@ -466,7 +467,11 @@ public:
             throw std::invalid_argument("Target rates require force mode");
         for (size_t i = 0; i < targets.size(); ++i) {
             if (!enabled(i)) continue;
-            const auto target = targets[i];
+            if (!targets[i]) {
+                if (!force_mode) throw std::invalid_argument("Missing displacement target");
+                continue;
+            }
+            const double target = *targets[i];
             if (target_rates && !std::isfinite((*target_rates)[i]))
                 throw std::invalid_argument("Invalid force target rate");
             if (!std::isfinite(target) ||
@@ -496,7 +501,13 @@ public:
             auto& channel = channels[i];
             channel.reset_pid |= channel.force_mode != force_mode || (gains && channel.gains != *gains);
             if (gains) channel.gains = *gains;
-            channel.target = targets[i];
+            channel.has_target = targets[i].has_value();
+            if (channel.has_target) {
+                channel.target = *targets[i];
+            } else {
+                channel.reset_pid = true;
+                channel.speed = 0;
+            }
             channel.target_rate = target_rates ? (*target_rates)[i] : 0;
             channel.force_mode = force_mode;
             channel.wake.notify_one();

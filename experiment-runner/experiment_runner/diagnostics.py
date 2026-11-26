@@ -92,17 +92,18 @@ def plot_hysteresis(path, table, poses, controls):
     columns = {}
     for index, tendon in enumerate(TENDONS):
         commands = [row[index] for row in table.values[:-1]]
-        if len(set(commands)) < 2:
+        if len(set(commands) - {None}) < 2:
             continue
         directions = {
             end: (value > previous) - (value < previous)
             for end, value, previous in zip(table.times[1:], commands, commands[:1] + commands)
+            if value is not None and previous is not None
         }
         samples = [(row["elapsed_s"], float(row["load_kgf"]))
                    for row in controls.get(tendon, ()) if row["load_kgf"]]
         series = {}
         for name, rows in pose_by_hold.items():
-            matched = [(force, directions[end], rows[end]) for end, force in samples if end in rows]
+            matched = [(force, directions[end], rows[end]) for end, force in samples if end in rows and end in directions]
             if matched:
                 series[name] = matched
         if series:
