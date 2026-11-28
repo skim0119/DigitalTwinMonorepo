@@ -14,7 +14,8 @@ from probe_model import rotation
 
 def pose_errors(pose, goal, *, vertical_axis="z"):
     normal = rotation(pose).apply([0, 0, 1])
-    reference_normal = rotation(goal).apply([0, 0, 1])
+    reference_normal = (np.eye(3)["xyz".index(vertical_axis)] if goal is None
+                        else rotation(goal).apply([0, 0, 1]))
     angle = np.degrees(np.arccos(np.clip(abs(normal @ reference_normal), 0, 1)))
     horizontal = [index for index, axis in enumerate("xyz") if axis != vertical_axis]
     return np.linalg.norm(pose[horizontal]), angle
@@ -103,8 +104,7 @@ def main(data, reference, config, step, max_pull, settle_timeout, position_weigh
         raise click.BadParameter("Must be finite.", param_hint="--max-pull")
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
-    goal = (load_home_reference(reference) if reference is not None
-            else np.array([0., 0., 0., 0., 0., 0., 1.]))
+    goal = load_home_reference(reference) if reference is not None else None
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
@@ -113,7 +113,8 @@ def main(data, reference, config, step, max_pull, settle_timeout, position_weigh
                   tilt_weight=tilt_weight, vertical_axis=vertical_axis)
 
     run_on_hardware(run, actions=max_pull * np.eye(len(BASE)), mode="round",
-                    data=data, config=config, seed=0, world_translation=True)
+                    data=data, config=config, seed=0, world_translation=True,
+                    world_orientation=reference is None)
 
 
 if __name__ == "__main__":
