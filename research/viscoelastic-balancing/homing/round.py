@@ -40,16 +40,16 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
                     loaded_pose, _ = rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
                     loss = cost(loaded_pose, goal)
                     rig.report(f"m{motor} +{offset:.3f} kgf | loss {loss:.3f}")
-                    if best_loss - loss < 0.01:
+                    if loss >= best_loss:
+                        rig.report(f"m{motor} | loss stopped decreasing ({best_loss:.3f} → {loss:.3f})")
                         if loss > best_loss and best_targets[motor] > BASE[motor]:
                             rig.report(f"m{motor} | backing off to {best_targets[motor]:.3f} kgf")
                             rig.hold(best_targets, "backoff", settle_timeout=settle_timeout, axial_pose=True)
                         break
                     best_loss = loss
                     best_targets = targets.copy()
-                    mm, degrees = pose_errors(loaded_pose, goal)
-                    if mm <= 5 and degrees <= 8:
-                        break
+                else:
+                    rig.report(f"m{motor} | reached +{max_pull:.3f} kgf pull limit")
             except SettleTimeout as error:
                 rig.report(f"m{motor} | {error}")
             pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
