@@ -19,19 +19,24 @@ def pose_errors(pose, goal):
     return np.linalg.norm(pose[:3] - goal[:3]), angle
 
 
-def cost(pose, goal):
+def cost(pose, goal, *, position_weight=1.0, tilt_weight=1.0):
     mm, degrees = pose_errors(pose, goal)
-    return np.hypot(mm / 5, degrees / 8)
+    return np.hypot(np.sqrt(position_weight) * mm / 5,
+                    np.sqrt(tilt_weight) * degrees / 8)
 
 
-def run_round(rig, *, goal, step, max_pull, settle_timeout):
+def run_round(rig, *, goal, step, max_pull, settle_timeout,
+              position_weight=1.0, tilt_weight=1.0):
+    def loss_at(pose):
+        return cost(pose, goal, position_weight=position_weight, tilt_weight=tilt_weight)
+
     pose, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout, axial_pose=True)
     initial_pose = pose.copy()
 
     def report_improvement(final_pose):
         initial_mm, initial_tilt = pose_errors(initial_pose, goal)
         final_mm, final_tilt = pose_errors(final_pose, goal)
-        initial_loss, final_loss = cost(initial_pose, goal), cost(final_pose, goal)
+        initial_loss, final_loss = loss_at(initial_pose), loss_at(final_pose)
         rig.report("Round improvement at baseline (positive means closer to home)")
         rig.report(f"  Position error {initial_mm:.2f} → {final_mm:.2f} mm "
                    f"({initial_mm - final_mm:+.2f} mm)")
@@ -41,7 +46,7 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
                    f"({initial_loss - final_loss:+.3f})")
 
     for pair in MOTOR_PAIRS:
-        baseline_loss = cost(pose, goal)
+        baseline_loss = loss_at(pose)
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
         for motor in pair:
             targets = BASE.copy()
@@ -53,7 +58,7 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
                     offset = min(offset + step, max_pull)
                     targets[motor] = BASE[motor] + offset
                     loaded_pose, _ = rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
-                    loss = cost(loaded_pose, goal)
+                    loss = loss_at(loaded_pose)
                     rig.report(f"m{motor} +{offset:.3f} kgf | loss {loss:.3f}")
                     if loss >= best_loss:
                         rig.report(f"m{motor} | loss stopped decreasing ({best_loss:.3f} → {loss:.3f})")
@@ -69,13 +74,13 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
                 rig.report(f"m{motor} | {error}")
             pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
             mm, degrees = pose_errors(pose, goal)
-            rig.report(f"At baseline | {mm:.2f} mm, {degrees:.2f}° tilt, loss {cost(pose, goal):.3f}")
+            rig.report(f"At baseline | {mm:.2f} mm, {degrees:.2f}° tilt, loss {loss_at(pose):.3f}")
             if mm <= 5 and degrees <= 8:
                 report_improvement(pose)
                 return
             if best_loss < baseline_loss:
                 break
-            baseline_loss = cost(pose, goal)
+            baseline_loss = loss_at(pose)
     report_improvement(pose)
 
 
@@ -87,16 +92,23 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
 @click.option("--max-pull", type=click.FloatRange(min=0, min_open=True), default=0.5,
               show_default=True, help="Maximum pull offset above baseline in kgf.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
-def main(data, reference, config, step, max_pull, settle_timeout):
+@click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
+              show_default=True, help="Weight on squared position error normalized by 5 mm.")
+@click.option("--tilt-weight", type=click.FloatRange(min=0), default=1.0,
+              show_default=True, help="Weight on squared tilt error normalized by 8 degrees.")
+def main(data, reference, config, step, max_pull, settle_timeout, position_weight, tilt_weight):
     """Run one measured-loss homing round, one tendon at a time."""
     if not math.isfinite(max_pull):
         raise click.BadParameter("Must be finite.", param_hint="--max-pull")
+    if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
+        raise click.UsageError("Use finite weights with at least one positive weight.")
     goal = load_home_reference(reference or data / "home.json")
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
         run_round(rig, goal=goal, step=step, max_pull=max_pull,
-                  settle_timeout=settle_timeout)
+                  settle_timeout=settle_timeout, position_weight=position_weight,
+                  tilt_weight=tilt_weight)
 
     run_on_hardware(run, actions=max_pull * np.eye(len(BASE)), mode="round",
                     data=data, config=config, seed=0)
