@@ -50,37 +50,32 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
         for motor in pair:
             targets = BASE.copy()
-            best_targets = BASE.copy()
-            best_loss = baseline_loss
             offset = 0.0
-            try:
-                while offset < max_pull:
-                    offset = min(offset + step, max_pull)
-                    targets[motor] = BASE[motor] + offset
-                    loaded_pose, _ = rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
-                    loss = loss_at(loaded_pose)
-                    rig.report(f"m{motor} +{offset:.3f} kgf | loss {loss:.3f}")
-                    if loss >= best_loss:
-                        rig.report(f"m{motor} | loss stopped decreasing ({best_loss:.3f} → {loss:.3f})")
-                        if loss > best_loss and best_targets[motor] > BASE[motor]:
-                            rig.report(f"m{motor} | backing off to {best_targets[motor]:.3f} kgf")
-                            rig.hold(best_targets, "backoff", settle_timeout=settle_timeout, axial_pose=True)
-                        break
-                    best_loss = loss
-                    best_targets = targets.copy()
-                else:
-                    rig.report(f"m{motor} | reached +{max_pull:.3f} kgf pull limit")
-            except SettleTimeout as error:
-                rig.report(f"m{motor} | {error}")
-            pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
-            mm, degrees = pose_errors(pose, goal)
-            rig.report(f"At baseline | {mm:.2f} mm, {degrees:.2f}° tilt, loss {loss_at(pose):.3f}")
-            if mm <= 5 and degrees <= 8:
-                report_improvement(pose)
-                return
-            if best_loss < baseline_loss:
+            while offset < max_pull:
+                before_loss = loss_at(pose)
+                offset = min(offset + step, max_pull)
+                targets[motor] = BASE[motor] + offset
+                try:
+                    rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
+                except SettleTimeout as error:
+                    rig.report(f"m{motor} | {error}. Returning to baseline.")
+                    pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
+                    break
+
+                pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
+                loss = loss_at(pose)
+                mm, degrees = pose_errors(pose, goal)
+                rig.report(f"m{motor} +{offset:.3f} kgf | settled baseline loss "
+                           f"{before_loss:.3f} → {loss:.3f} | {mm:.2f} mm, {degrees:.2f}° tilt")
+                if mm <= 5 and degrees <= 8:
+                    report_improvement(pose)
+                    return
+                if loss >= before_loss:
+                    rig.report(f"m{motor} | settled loss did not decrease. Ending this direction.")
+                    break
+            else:
+                rig.report(f"m{motor} | reached +{max_pull:.3f} kgf pull limit")
                 break
-            baseline_loss = loss_at(pose)
     report_improvement(pose)
 
 
