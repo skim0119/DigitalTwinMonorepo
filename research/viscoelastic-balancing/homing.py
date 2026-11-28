@@ -299,12 +299,18 @@ def capture_reference(rig, *, reference):
     print("Saved home pose to", reference)
 
 
-def run_manual(rig, *, action, settle_timeout):
+def run_manual(rig, *, action, settle_timeout, goal=None):
     def report_pose(label, pose):
         xyz = ", ".join(f"{value:.2f}" for value in pose[:3])
         quaternion = ", ".join(f"{value:.5f}" for value in pose[3:])
         rig.report(f"{label} | xyz mm [{xyz}] | quaternion xyzw [{quaternion}]")
 
+        if goal is not None:
+            mm, degrees = pose_errors(pose, goal)
+            rig.report(f"{label} error from home | {mm:.2f} mm, {degrees:.2f}°")
+
+    if goal is None:
+        rig.report("Home reference unavailable. Reporting probe delta only.")
     start, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout)
     report_pose("Before pose", start)
     activation = ", ".join(
@@ -454,6 +460,25 @@ def save_homing_diagnostics(path, goal):
         click.echo(f"Could not save homing diagnostics: {error}", err=True)
 
 
+def load_home_reference(path):
+    try:
+        reference = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"Home reference missing: {path}. Place the tip at the desired home "
+            "pose and run homing.py reference, or use --reference with an existing file."
+        ) from None
+    goal = np.asarray(reference["pose"], dtype=float)
+    if (
+        reference["frame"] != "arm_base/arm_tip"
+        or goal.shape != (7,)
+        or not np.isfinite(goal).all()
+        or np.linalg.norm(goal[3:]) < 1e-6
+    ):
+        raise click.UsageError("Invalid home reference")
+    return goal
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument("mode", type=click.Choice(["reference", "sweep", "train", "predict", "manual"]))
 @click.option("--data", type=click.Path(path_type=Path), default=DATA)
@@ -494,6 +519,7 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
     data.mkdir(parents=True, exist_ok=True)
 
     model = model or data / "probe_model.npz"
+    explicit_reference = reference is not None
     reference = reference or data / "home.json"
     goal = None
     if mode == "train":
@@ -501,21 +527,7 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
         return
     elif mode == "predict":
         model = ProbeModel.load(model)
-        try:
-            reference = json.loads(reference.read_text())
-        except FileNotFoundError:
-            raise click.ClickException(
-                f"Home reference missing: {reference}. Place the tip at the desired home "
-                "pose and run homing.py reference, or use --reference with an existing file."
-            ) from None
-        goal = np.asarray(reference["pose"], dtype=float)
-        if (
-            reference["frame"] != "arm_base/arm_tip"
-            or goal.shape != (7,)
-            or not np.isfinite(goal).all()
-            or np.linalg.norm(goal[3:]) < 1e-6
-        ):
-            raise click.UsageError("Invalid home reference")
+        goal = load_home_reference(reference)
         actions = model.actions[np.max(model.actions, axis=1) <= max(PULL_OFFSETS_KGF)]
         if not len(actions):
             raise click.UsageError("Model has no probes within the current pull limit")
@@ -525,7 +537,8 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
         action = np.zeros_like(BASE)
         action[list(pair)] = offsets
         actions = action[None, :]
-        run = partial(run_manual, action=action, settle_timeout=settle_timeout)
+        manual_goal = load_home_reference(reference) if explicit_reference or reference.exists() else None
+        run = partial(run_manual, action=action, settle_timeout=settle_timeout, goal=manual_goal)
     elif mode == "sweep":
         actions = sweep_actions()
         run = partial(run_sweep, actions=actions, blocks=blocks, seed=seed,
