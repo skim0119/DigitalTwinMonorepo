@@ -131,7 +131,7 @@ class Rig:
 
     def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30, axial_pose=False,
              local_normal=(0, 0, 1), pose_timeout=POSE_MAX_AGE_S, pose_check=None,
-             sample_stop=None, decrement_rate=DECREMENT_KGF_S):
+             sample_stop=None, decrement_rate=DECREMENT_KGF_S, settle_gap=0.0):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
         self.report(
@@ -141,6 +141,7 @@ class Rig:
         next_report = begin + 3
         load_gap = None
         stable = None
+        last_paired = None
         poses = []
         within_goal = False
         phase_end = begin + settle_timeout
@@ -171,6 +172,7 @@ class Rig:
                     f"{phase}: no new valid arm_base/arm_tip pose for "
                     f"{now - self.last_pose:.3f} s (load cells ready={ready})"
                 )
+            settle_gap_elapsed = last_paired is None or now - last_paired >= settle_gap
             report = now >= next_report
             if report:
                 next_report = now + 3
@@ -183,8 +185,9 @@ class Rig:
             if not ready and self.last is not None:
                 if load_gap is None:
                     load_gap = now
-                    stable = None
-                    poses.clear()
+                    if settle_gap_elapsed:
+                        stable = None
+                        poses.clear()
                     self.log(
                         dict(kind="load_gap", phase=phase, cycle=self.cycle, t=now)
                     )
@@ -208,7 +211,8 @@ class Rig:
                     )
                 )
                 load_gap = None
-            if self.last is not None and now - self.last >= SETTLE_MAX_SAMPLE_GAP_S:
+            if (self.last is not None and now - self.last >= SETTLE_MAX_SAMPLE_GAP_S
+                    or settle_gap and settle_gap_elapsed):
                 stable = None
                 poses.clear()
             forces = np.array([item[0] for item in self.controller.pid_status()])
@@ -226,9 +230,11 @@ class Rig:
             self.refresh_command()
             if not fresh_pose:
                 # Return tension using load cells while waiting for a new pose sample.
-                stable = None
-                poses.clear()
+                if settle_gap_elapsed:
+                    stable = None
+                    poses.clear()
                 continue
+            last_paired = now
             self.log(
                 dict(
                     kind="sample",

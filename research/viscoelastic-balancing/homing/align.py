@@ -55,26 +55,44 @@ class CounterBendPulse:
 def align(rig, *, max_tension, tolerance, max_trials, hold_seconds):
     def loss(pose):
         distance, tilt = errors(pose)
-        return float(np.hypot(distance / POSITION_TOL_MM, tilt / tolerance))
+        position_error, tilt_error = distance / POSITION_TOL_MM, tilt / tolerance
+        return max(position_error, tilt_error) + 0.1 * np.hypot(position_error, tilt_error)
 
     def inside(pose):
         distance, tilt = errors(pose)
         return distance <= POSITION_TOL_MM and tilt <= tolerance
 
-    def hold(targets, phase, *, duration=1.2, sample_stop=None, verify=False):
+    def near(pose):
+        distance, tilt = errors(pose)
+        return distance <= 1.15 * POSITION_TOL_MM and tilt <= 1.15 * tolerance
+
+    def hold(targets, phase, *, duration=1.0, sample_stop=None, verify=False):
         return rig.hold(
             targets, phase, duration=duration, settle_timeout=35,
             axial_pose=True, local_normal=GREEN, pose_timeout=2.0,
             pose_check=inside if verify else None, sample_stop=sample_stop,
-            decrement_rate=0.20 if phase == "return" else 0.10,
+            decrement_rate=0.20 if phase == "return" else 0.10, settle_gap=0.15,
         )
 
     def report_pose(label, pose):
         distance, tilt = errors(pose)
         rig.report(f"{label} | horizontal error {distance:.2f} mm | green-axis error {tilt:.2f}°")
 
+    def verify_baseline():
+        pose, verified = hold(BASE, "return", duration=hold_seconds, verify=True)
+        distance, tilt = errors(pose)
+        report_pose("Verified baseline window", pose)
+        if verified:
+            rig.log(dict(kind="result", reason="Position and normal alignment verified at baseline",
+                         position_mm=distance, tilt_deg=tilt, targets_kgf=BASE.tolist()))
+        return pose, verified
+
     pose, _ = hold(BASE, "baseline")
     report_pose("Initial baseline", pose)
+    if near(pose):
+        pose, verified = verify_baseline()
+        if verified:
+            return
     directions = list(PAIRS)
     trial = 0
     try:
@@ -90,9 +108,11 @@ def align(rig, *, max_tension, tolerance, max_trials, hold_seconds):
                             trial += 1
                             start_loss = loss(pose)
                             targets = BASE.copy()
-                            targets[motor], targets[partner] = peak, RELEASE_KGF
-                            stop = CounterBendPulse(loss, start_loss, motor, peak)
-                            rig.report(f"Pulse {trial}/{max_trials} | m{motor} {peak:.2f} kgf, m{partner} {RELEASE_KGF:.2f} kgf")
+                            fine = near(pose)
+                            pulse_peak = min(peak, 0.30) if fine else peak
+                            targets[motor], targets[partner] = pulse_peak, RELEASE_KGF
+                            stop = CounterBendPulse(loss, start_loss, motor, pulse_peak)
+                            rig.report(f"Pulse {trial}/{max_trials} | m{motor} {pulse_peak:.2f} kgf, m{partner} {RELEASE_KGF:.2f} kgf")
                             try:
                                 loaded, _ = hold(targets, "pulse", sample_stop=stop)
                                 report_pose(f"Release trigger ({stop.reason})", loaded)
@@ -100,6 +120,10 @@ def align(rig, *, max_tension, tolerance, max_trials, hold_seconds):
                                 rig.report(f"{error}. Returning to baseline.")
                             pose, _ = hold(BASE, "return")
                             report_pose(f"Released pulse {trial}", pose)
+                            if near(pose):
+                                pose, verified = verify_baseline()
+                                if verified:
+                                    return
                             gain = start_loss - loss(pose)
                             rig.log(dict(kind="pulse_result", trial=trial, motor=motor, partner=partner,
                                          stop=stop.reason, target_kgf=targets.tolist(),
@@ -122,15 +146,10 @@ def align(rig, *, max_tension, tolerance, max_trials, hold_seconds):
         report_pose("Released", pose)
         raise
 
-    pose, verified = hold(BASE, "return", duration=hold_seconds, verify=True)
-    distance, tilt = errors(pose)
-    report_pose("Final baseline", pose)
-    rig.log(dict(kind="released", position_mm=distance, tilt_deg=tilt, targets_kgf=BASE.tolist()))
+    pose, verified = verify_baseline()
     if not verified:
         raise RuntimeError(f"Baseline restored after {trial} pulses. "
                            f"Required ≤{POSITION_TOL_MM:g} mm and ≤{tolerance:g}° throughout verification.")
-    rig.log(dict(kind="result", reason="Position and normal alignment verified at baseline",
-                 position_mm=distance, tilt_deg=tilt))
 
 
 @click.command()
