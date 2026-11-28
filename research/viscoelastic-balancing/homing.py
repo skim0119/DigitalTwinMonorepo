@@ -484,7 +484,30 @@ def load_home_reference(path):
     return goal
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+class HomingCommand(click.Command):
+    def parse_args(self, ctx, args):
+        # Click options have fixed arity. Pack motor and offset lists before parsing.
+        packed = []
+        index = 0
+        while index < len(args):
+            option = args[index]
+            packed.append(option)
+            index += 1
+            if option in {"--pair", "--offsets"}:
+                values = []
+                while index < len(args):
+                    try:
+                        float(args[index])
+                    except ValueError:
+                        break
+                    values.append(args[index])
+                    index += 1
+                if values:
+                    packed[-1] = f"{option}={','.join(values)}"
+        return super().parse_args(ctx, packed)
+
+
+@click.command(cls=HomingCommand, context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument("mode", type=click.Choice(["reference", "sweep", "train", "predict", "manual"]))
 @click.option("--data", type=click.Path(path_type=Path), default=DATA)
 @click.option("--extra-data", type=click.Path(path_type=Path, exists=True, file_okay=False),
@@ -496,9 +519,9 @@ def load_home_reference(path):
 )
 @click.option("--motor", "motor_offsets", type=(click.IntRange(0, 5), float), multiple=True,
               metavar="MOTOR KGF", help="Manual motor and signed offset. Repeat for multiple motors.")
-@click.option("--pair", type=(click.IntRange(0, 5), click.IntRange(0, 5)), metavar="MOTOR MOTOR",
-              help="Manual shorthand for two motors. Use with --offsets.")
-@click.option("--offsets", type=(float, float), metavar="KGF KGF",
+@click.option("--pair", metavar="MOTOR ...",
+              help="Manual motor IDs. Use with --offsets.")
+@click.option("--offsets", metavar="KGF ...",
               help="Manual signed tension offsets in motor order.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=SWEEP_SETTLE_TIMEOUT_S,
               show_default=True, help="Sweep time limit in seconds per baseline, probe, or return phase.")
@@ -515,7 +538,13 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
         if pair is not None or offsets is not None:
             if motor_offsets or pair is None or offsets is None:
                 raise click.UsageError("Use --motor, or use --pair and --offsets together.")
-            motor_offsets = tuple(zip(pair, offsets))
+            motor_ids = [click.IntRange(0, 5).convert(value, None, None)
+                         for value in pair.split(",")]
+            offset_values = [click.FLOAT.convert(value, None, None)
+                             for value in offsets.split(",")]
+            if len(motor_ids) != len(offset_values):
+                raise click.UsageError("Provide one offset per motor.")
+            motor_offsets = tuple(zip(motor_ids, offset_values))
         if not motor_offsets:
             raise click.UsageError("Manual mode requires at least one --motor MOTOR KGF.")
         motors, offsets = zip(*motor_offsets)
