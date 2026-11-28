@@ -29,6 +29,7 @@ INCREMENT_KGF_S = 0.5
 DECREMENT_KGF_S = 0.1
 MEMORY_SECONDS = (1.0, 8.0)
 HOLD_S = 0.6
+SWEEP_SETTLE_TIMEOUT_S = 90
 COMMAND_TTL_S = 0.20
 SETTLE_MAX_SAMPLE_GAP_S = 0.15
 POSE_MAX_AGE_S = 0.25
@@ -88,6 +89,10 @@ def background_writer(write):
             worker.result()
 
 
+class SettleTimeout(RuntimeError):
+    """Feedback stayed available, but the target did not settle."""
+
+
 class Rig:
     def __init__(self, controller, spin, log, force_limit, report=print):
         self.controller, self.spin, self.log = controller, spin, log
@@ -115,7 +120,7 @@ class Rig:
         self.controller.command(self.targets.tolist(), True, COMMAND_TTL_S)
         self.last_command = sent_at
 
-    def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None):
+    def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
         self.report(
@@ -127,7 +132,9 @@ class Rig:
         stable = None
         poses = []
         within_goal = False
-        phase_end = begin + 30 if deadline is None else min(begin + 30, deadline)
+        phase_end = begin + settle_timeout
+        if deadline is not None:
+            phase_end = min(phase_end, deadline)
         while (remaining := phase_end - time.monotonic()) > 0:
             previous = self.stamp
             poll_start = time.monotonic()
@@ -248,19 +255,27 @@ class Rig:
                 return mean, within_goal
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError(f"Time budget expired during {phase}")
-        raise RuntimeError(f"Timed out waiting for {phase} feedback")
+        raise SettleTimeout(f"Timed out waiting for {phase} feedback")
 
-    def probe(self, start, action, block, *, deadline=None):
+    def probe(self, start, action, block, *, deadline=None, settle_timeout=30):
         memory = self.memory.ravel().copy()
         probe_deadline = (
             None if deadline is None else deadline - ramp_seconds(-action) - 2 * HOLD_S
         )
         try:
-            self.hold(BASE + action, "probe", deadline=probe_deadline)
+            self.hold(BASE + action, "probe", deadline=probe_deadline, settle_timeout=settle_timeout)
+        except SettleTimeout as error:
+            self.hold(BASE, "return", deadline=deadline, settle_timeout=settle_timeout)
+            if deadline is not None:
+                raise
+            self.log(dict(kind="skipped_probe", cycle=self.cycle, block=block,
+                          action=action.tolist(), reason=str(error)))
+            self.cycle += 1
+            return False
         except TimeoutError:
-            self.hold(BASE, "return", deadline=deadline)
+            self.hold(BASE, "return", deadline=deadline, settle_timeout=settle_timeout)
             raise RuntimeError("Time budget reached during probe. Returned to baseline.") from None
-        end, _ = self.hold(BASE, "return", deadline=deadline)
+        end, _ = self.hold(BASE, "return", deadline=deadline, settle_timeout=settle_timeout)
         self.log(
             dict(
                 kind="cycle",
@@ -274,6 +289,7 @@ class Rig:
             )
         )
         self.cycle += 1
+        return True
 
 
 def capture_reference(rig, *, reference):
@@ -283,7 +299,7 @@ def capture_reference(rig, *, reference):
     print("Saved home pose to", reference)
 
 
-def run_sweep(rig, *, actions, blocks, seed):
+def run_sweep(rig, *, actions, blocks, seed, settle_timeout=SWEEP_SETTLE_TIMEOUT_S):
     rng = np.random.default_rng(seed)
     for block in range(blocks):
         started = time.monotonic()
@@ -294,13 +310,15 @@ def run_sweep(rig, *, actions, blocks, seed):
                 f"{offsets + ' kgf' if offsets else 'baseline only'}",
                 flush=True,
             )
-            start, _ = rig.hold(BASE, "baseline")
-            rig.probe(start, actions[i], block)
+            start, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout)
+            recorded = rig.probe(start, actions[i], block, settle_timeout=settle_timeout)
+            if not recorded:
+                rig.report("  Probe skipped after settling timeout. Baseline verified.", flush=True)
             elapsed = time.monotonic() - started
             if n < len(actions):
                 remaining = elapsed / n * (len(actions) - n)
                 rig.report(
-                    f"  Recorded. Block elapsed {elapsed:.0f}s, "
+                    f"  Block elapsed {elapsed:.0f}s, "
                     f"about {remaining:.0f}s remaining",
                     flush=True,
                 )
@@ -425,12 +443,14 @@ def save_homing_diagnostics(path, goal):
 @click.option(
     "--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json"
 )
+@click.option("--settle-timeout", type=click.IntRange(min=1), default=SWEEP_SETTLE_TIMEOUT_S,
+              show_default=True, help="Sweep time limit in seconds per baseline, probe, or return phase.")
 @click.option("--blocks", type=click.IntRange(min=1), default=3, show_default=True)
 @click.option("--seed", type=int, default=0)
 @click.option("--max-probes", type=click.IntRange(min=1), help="Optional probe count limit.")
 @click.option("--max-seconds", type=click.IntRange(min=1), default=60, show_default=True,
               help="Time budget for predictive homing.")
-def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds):
+def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds, settle_timeout):
     """Collect and use baseline-to-baseline SE(3) probe responses."""
     if extra_data and mode != "train":
         raise click.UsageError("--extra-data requires train")
@@ -466,7 +486,8 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
                       max_seconds=max_seconds)
     elif mode == "sweep":
         actions = sweep_actions()
-        run = partial(run_sweep, actions=actions, blocks=blocks, seed=seed)
+        run = partial(run_sweep, actions=actions, blocks=blocks, seed=seed,
+                      settle_timeout=settle_timeout)
     else:
         if reference.exists():
             raise click.UsageError(

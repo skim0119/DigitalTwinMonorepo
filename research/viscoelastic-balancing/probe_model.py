@@ -112,6 +112,8 @@ class ProbeModel:
         best_action = None
         best_improvement = 0.0
         for action, predicted in self.predictions(pose, memory):
+            if not np.any(action):
+                continue
             improvement = current_cost - cost(predicted, goal)
             if duration is not None:
                 improvement /= duration(action)
