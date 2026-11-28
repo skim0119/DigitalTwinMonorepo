@@ -29,7 +29,8 @@ def cost(pose, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
 
 
 PULL_KGF = 0.50
-PINGS_PER_DIRECTION = 1
+DEFAULT_MAX_PINGS = 5
+DEFAULT_MIN_IMPROVEMENT = 0.05
 
 
 def pull_targets(motor):
@@ -39,7 +40,8 @@ def pull_targets(motor):
 
 
 def run_round(rig, *, settle_timeout,
-              position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
+              position_weight=1.0, tilt_weight=0.0, vertical_axis="z",
+              max_pings=DEFAULT_MAX_PINGS, min_improvement=DEFAULT_MIN_IMPROVEMENT):
     def loss_at(pose):
         return cost(pose, position_weight=position_weight, tilt_weight=tilt_weight,
                     vertical_axis=vertical_axis)
@@ -65,10 +67,10 @@ def run_round(rig, *, settle_timeout,
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
         for motor in pair:
             targets = pull_targets(motor)
-            direction_start_loss = loss_at(pose)
-            for ping in range(1, PINGS_PER_DIRECTION + 1):
+            improved = False
+            for ping in range(1, max_pings + 1):
                 before_loss = loss_at(pose)
-                rig.report(f"Ping {ping}/{PINGS_PER_DIRECTION} | "
+                rig.report(f"Ping {ping}/{max_pings} | "
                            f"m{motor} +{PULL_KGF:.2f} kgf")
                 try:
                     rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True, local_normal=LOCAL_Y)
@@ -85,14 +87,13 @@ def run_round(rig, *, settle_timeout,
                 if mm <= 5 and (tilt_weight == 0 or degrees <= 8):
                     report_improvement(pose)
                     return
-            else:
-                final_loss = loss_at(pose)
-                improved = final_loss < direction_start_loss
-                verdict = "improved" if improved else "did not improve"
-                rig.report(f"m{motor} {verdict} after {PINGS_PER_DIRECTION} ping "
-                           f"| loss {direction_start_loss:.3f} → {final_loss:.3f}")
-                if improved:
+                improvement = before_loss - loss
+                if improvement <= 0 or improvement < min_improvement:
+                    rig.report(f"m{motor} | improvement {improvement:+.3f} below repeat criterion")
                     break
+                improved = True
+            if improved:
+                break
     report_improvement(pose)
 
 
@@ -106,15 +107,22 @@ def run_round(rig, *, settle_timeout,
               show_default=True, help="Weight on squared base-to-tip Y-axis angle normalized by 8 degrees.")
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
-def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
+@click.option("--max-pings", type=click.IntRange(min=1), default=DEFAULT_MAX_PINGS,
+              show_default=True, help="Maximum pings per motor direction.")
+@click.option("--min-improvement", type=click.FloatRange(min=0), default=DEFAULT_MIN_IMPROVEMENT,
+              show_default=True, help="Minimum settled loss reduction required to repeat a ping.")
+def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_axis, max_pings, min_improvement):
     """Run one measured-loss homing round, pulling one tendon at a time."""
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
+    if not math.isfinite(min_improvement):
+        raise click.BadParameter("Must be finite.", param_hint="--min-improvement")
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
         run_round(rig, settle_timeout=settle_timeout, position_weight=position_weight,
-                  tilt_weight=tilt_weight, vertical_axis=vertical_axis)
+                  tilt_weight=tilt_weight, vertical_axis=vertical_axis,
+                  max_pings=max_pings, min_improvement=min_improvement)
 
     actions = np.array([pull_targets(motor) - BASE for pair in MOTOR_PAIRS for motor in pair])
     run_on_hardware(run, actions=actions, mode="round",
