@@ -4,22 +4,30 @@ from collections import deque
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, FancyArrowPatch
 
 
 DT = 0.004
 MASS = 1.0
 ANCHOR_RADIUS = 3.0
 CLICK_IMPULSE = 4.5
-EQUILIBRIUM_STIFFNESS = 2.2
+EQUILIBRIUM_STIFFNESS = 0.18
 PLASTIC_STIFFNESS = 10.0
-YIELD_EXTENSION = 0.18
+YIELD_EXTENSION = 0.16
+CIRCULAR_PERIOD = 4.0
+CIRCULAR_FORCE = 4.4
 FRACTIONAL_ORDER = 0.45
 RELAXATION_TIMES = np.geomspace(0.02, 15.0, 14)
 MODAL_WEIGHTS = RELAXATION_TIMES ** -FRACTIONAL_ORDER
-MODAL_STIFFNESS = 7.5 * MODAL_WEIGHTS / MODAL_WEIGHTS.sum()
+MODAL_STIFFNESS = 1.5 * MODAL_WEIGHTS / MODAL_WEIGHTS.sum()
 MODE_DECAY = np.exp(-DT / RELAXATION_TIMES)
 MODE_INPUT = MODAL_STIFFNESS * (-np.expm1(-DT / RELAXATION_TIMES)) * RELAXATION_TIMES / DT
+
+
+def rotating_force_cycle():
+    steps = round(CIRCULAR_PERIOD / DT)
+    angles = 2 * np.pi * np.arange(steps) / steps
+    return CIRCULAR_FORCE * np.column_stack((np.cos(angles), np.sin(angles)))
 
 
 class RadialSprings:
@@ -71,12 +79,15 @@ class RadialSprings:
 
 
 def build_view(system):
-    figure, (scene, response) = plt.subplots(
-        1, 2, figsize=(10, 5), layout="constrained", gridspec_kw={"width_ratios": (3, 2)}
-    )
+    figure = plt.figure(figsize=(10, 5), layout="constrained")
+    columns = figure.add_gridspec(1, 2, width_ratios=(3, 2))
+    scene = figure.add_subplot(columns[0])
+    response = figure.add_subplot(columns[1])
+    orbit = figure.add_subplot(columns[1], label="orbit")
+    orbit.set_visible(False)
     figure.suptitle("Six viscoelastic springs")
     scene.set(xlim=(-3.45, 3.45), ylim=(-3.45, 3.45), aspect="equal",
-              title="Click to push the ball  ·  R to reset")
+              title="Click to push  ·  C to toggle circular load  ·  R to reset")
     scene.set_axis_off()
     scene.plot(0, 0, "+", color="0.5", markersize=9)
     scene.scatter(*system.anchors.T, marker="s", color="#304453", s=55, zorder=3)
@@ -86,6 +97,28 @@ def build_view(system):
     springs = [scene.plot([], [], color="#578983", lw=1.6)[0] for _ in range(6)]
     ball = Circle((0, 0), 0.18, color="#d86e32", zorder=4)
     scene.add_patch(ball)
+    force_arrow = FancyArrowPatch((0, 0), (1, 0), arrowstyle="-|>", mutation_scale=14,
+                                  linewidth=2, color="#304453", zorder=5, visible=False)
+    scene.add_patch(force_arrow)
+
+    orbit.set(xlabel="X displacement", ylabel="Y displacement", aspect="equal")
+    orbit.grid(alpha=0.2)
+    orbit.plot(0, 0, "+", color="0.4", markersize=8)
+    path_line, = orbit.plot([], [], color="#ad4820", linewidth=1.4)
+    path_dot, = orbit.plot([], [], "o", color="#ad4820", markersize=5)
+    center_line, = orbit.plot([], [], "-o", color="#006f75", markersize=4)
+    centered_guide = Circle((0, 0), 0, fill=False, linestyle="--", edgecolor="0.55", visible=False)
+    orbit.add_patch(centered_guide)
+    orbit_readout = orbit.text(0.04, 0.04, "", transform=orbit.transAxes, va="bottom",
+                               bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.85})
+    drive = rotating_force_cycle()
+    orbit_path = deque(maxlen=3 * len(drive))
+    cycle_positions = np.empty_like(drive)
+    driving = show_orbit = False
+    drive_steps = 0
+    orbit_center = None
+    orbit_radius = 0.0
+
     response.set(xlabel="Extension", ylabel="Axial force")
     response.grid(alpha=0.2)
     response.axhline(0, color="0.7", linewidth=0.7)
@@ -111,20 +144,56 @@ def build_view(system):
         point = np.stack((system.extension, system.force))
         if not history or np.any(np.abs(point - history[-1]) > [[0.001], [0.02]]):
             history.append(point)
-        curve = np.asarray(history)[:, :, selected]
-        trace.set_data(*curve.T)
-        current.set_data([system.extension[selected]], [system.force[selected]])
-        ext = max(0.2, np.abs(curve[:, 0]).max()) * 1.1
-        force = max(0.5, np.abs(curve[:, 1]).max()) * 1.1
-        response.set(xlim=(-ext, ext), ylim=(-force, force),
-                     title=f"Spring {selected + 1}  ·  Press 1–6 to select")
-        displacement = np.linalg.norm(system.position)
-        readout.set_text(f"Ball offset  {displacement:.2f}\nPermanent slip  {system.slip[selected]:+.2f}")
+        force_arrow.set_visible(driving)
+        if driving:
+            direction = drive[(drive_steps - 1) % len(drive)] / CIRCULAR_FORCE
+            force_arrow.set_positions(system.position, system.position + 0.75 * direction)
+        response.set_visible(not show_orbit)
+        orbit.set_visible(show_orbit)
+        if show_orbit:
+            trajectory = np.asarray(orbit_path) if orbit_path else system.position[None, :]
+            path_line.set_data(*trajectory.T)
+            path_dot.set_data([system.position[0]], [system.position[1]])
+            max_offset = max(np.abs(trajectory).max(), np.abs(system.position).max(), orbit_radius)
+            limit = max(0.23, max_offset * 1.15)
+            orbit.set(xlim=(-limit, limit), ylim=(-limit, limit),
+                      title="Circular load on" if driving else "Circular load off")
+            centered_guide.set_visible(orbit_center is not None)
+            if orbit_center is None:
+                center_line.set_data([], [])
+                orbit_readout.set_text("Waiting for a full cycle")
+            else:
+                centered_guide.set_radius(orbit_radius)
+                center_line.set_data([0, orbit_center[0]], [0, orbit_center[1]])
+                offset = np.linalg.norm(orbit_center)
+                relative_offset = offset / orbit_radius if orbit_radius > 0 else 0
+                orbit_readout.set_text(f"Loop center offset  {offset:.3f} ({relative_offset:.0%} of radius)")
+        else:
+            curve = np.asarray(history)[:, :, selected]
+            trace.set_data(*curve.T)
+            current.set_data([system.extension[selected]], [system.force[selected]])
+            ext = max(0.2, np.abs(curve[:, 0]).max()) * 1.1
+            force = max(0.5, np.abs(curve[:, 1]).max()) * 1.1
+            response.set(xlim=(-ext, ext), ylim=(-force, force),
+                         title=f"Spring {selected + 1}  ·  Press 1–6 to select")
+            displacement = np.linalg.norm(system.position)
+            readout.set_text(f"Ball offset  {displacement:.2f}\nPermanent slip  {system.slip[selected]:+.2f}")
         figure.canvas.draw_idle()
 
     def advance():
+        nonlocal drive_steps, orbit_center, orbit_radius
         for _ in range(5):
-            system.step()
+            if driving:
+                index = drive_steps % len(drive)
+                system.step(drive[index])
+                orbit_path.append(system.position.copy())
+                cycle_positions[index] = system.position
+                drive_steps += 1
+                if index == len(drive) - 1:
+                    orbit_center = cycle_positions.mean(axis=0)
+                    orbit_radius = np.linalg.norm(cycle_positions - orbit_center, axis=1).mean()
+            else:
+                system.step()
         draw()
 
     def click(event):
@@ -132,12 +201,23 @@ def build_view(system):
             system.push((event.xdata, event.ydata))
 
     def key(event):
-        nonlocal selected
+        nonlocal selected, driving, show_orbit, drive_steps, orbit_center, orbit_radius
         if event.key == "r":
             system.reset()
             history.clear()
+            orbit_path.clear()
+            driving = show_orbit = False
+        elif event.key == "c":
+            driving = not driving
+            show_orbit = True
+            if driving:
+                drive_steps = 0
+                orbit_path.clear()
+                orbit_center = None
+                orbit_radius = 0.0
         elif event.key and event.key in tuple("123456"):
             selected = int(event.key) - 1
+            show_orbit = False
         draw()
 
     figure.canvas.mpl_connect("button_press_event", click)

@@ -12,12 +12,9 @@ import numpy as np
 from matplotlib.animation import FFMpegWriter
 from matplotlib.patches import Circle, FancyArrowPatch
 
-from radial_springs import DT, RadialSprings
+from radial_springs import CIRCULAR_FORCE, DT, RadialSprings, rotating_force_cycle
 
 
-PERIOD = 2.25
-FORCE_AMPLITUDE = 3.12
-YIELD_EXTENSION = 0.10
 CYCLES = 5
 FPS = 25
 INK = "#172b35"
@@ -27,10 +24,9 @@ CENTER = "#006f75"
 
 
 def simulate():
-    system = RadialSprings(yield_extension=YIELD_EXTENSION)
-    steps = round(PERIOD / DT)
-    phase = 2 * np.pi * np.arange(steps) / steps
-    forces = FORCE_AMPLITUDE * np.column_stack((np.cos(phase), np.sin(phase)))
+    system = RadialSprings()
+    forces = rotating_force_cycle()
+    steps = len(forces)
     positions = np.zeros((CYCLES * steps + 1, 2))
     cycle_slip = np.zeros(CYCLES)
     for index in range(CYCLES * steps):
@@ -100,7 +96,7 @@ def render(output):
             normal = np.array([-segment[1], segment[0]]) / np.linalg.norm(segment)
             vertices = point + np.outer(along, segment) + np.outer(corrugation, normal)
             spring.set_data(*vertices.T)
-        direction = forces[index % steps] / FORCE_AMPLITUDE
+        direction = forces[index % steps] / CIRCULAR_FORCE
         arrow.set_positions(point, point + 0.95 * direction)
 
         completed = index // steps
