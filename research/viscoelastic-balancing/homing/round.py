@@ -8,21 +8,20 @@ import numpy as np
 
 # Support python homing/round.py from the experiment checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from homing import BASE, DATA, HERE, MOTOR_PAIRS, SettleTimeout, load_home_reference, run_on_hardware
+from homing import BASE, DATA, HERE, MOTOR_PAIRS, SettleTimeout, run_on_hardware
 from probe_model import rotation
 
 
-def pose_errors(pose, goal, *, vertical_axis="z"):
+def pose_errors(pose, *, vertical_axis="z"):
     normal = rotation(pose).apply([0, 0, 1])
-    reference_normal = (np.eye(3)["xyz".index(vertical_axis)] if goal is None
-                        else rotation(goal).apply([0, 0, 1]))
-    angle = np.degrees(np.arccos(np.clip(abs(normal @ reference_normal), 0, 1)))
+    vertical = np.eye(3)["xyz".index(vertical_axis)]
+    angle = np.degrees(np.arccos(np.clip(abs(normal @ vertical), 0, 1)))
     horizontal = [index for index, axis in enumerate("xyz") if axis != vertical_axis]
     return np.linalg.norm(pose[horizontal]), angle
 
 
-def cost(pose, goal, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
-    mm, degrees = pose_errors(pose, goal, vertical_axis=vertical_axis)
+def cost(pose, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
+    mm, degrees = pose_errors(pose, vertical_axis=vertical_axis)
     return np.hypot(np.sqrt(position_weight) * mm / 5,
                     np.sqrt(tilt_weight) * degrees / 8)
 
@@ -39,18 +38,18 @@ def paired_targets(motor, partner):
     return targets
 
 
-def run_round(rig, *, goal, settle_timeout,
+def run_round(rig, *, settle_timeout,
               position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
     def loss_at(pose):
-        return cost(pose, goal, position_weight=position_weight, tilt_weight=tilt_weight,
+        return cost(pose, position_weight=position_weight, tilt_weight=tilt_weight,
                     vertical_axis=vertical_axis)
 
     pose, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout, axial_pose=True)
     initial_pose = pose.copy()
 
     def report_improvement(final_pose):
-        initial_mm, initial_tilt = pose_errors(initial_pose, goal, vertical_axis=vertical_axis)
-        final_mm, final_tilt = pose_errors(final_pose, goal, vertical_axis=vertical_axis)
+        initial_mm, initial_tilt = pose_errors(initial_pose, vertical_axis=vertical_axis)
+        final_mm, final_tilt = pose_errors(final_pose, vertical_axis=vertical_axis)
         initial_loss, final_loss = loss_at(initial_pose), loss_at(final_pose)
         rig.report("Round improvement at baseline (positive means closer to home)")
         rig.report(f"  horizontal error {initial_mm:.2f} → {final_mm:.2f} mm "
@@ -80,7 +79,7 @@ def run_round(rig, *, goal, settle_timeout,
 
                 pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
                 loss = loss_at(pose)
-                mm, degrees = pose_errors(pose, goal, vertical_axis=vertical_axis)
+                mm, degrees = pose_errors(pose, vertical_axis=vertical_axis)
                 rig.report(f"Settled baseline loss {before_loss:.3f} → {loss:.3f} "
                            f"| horizontal error {mm:.2f} mm, {degrees:.2f}° tilt")
                 if mm <= 5 and (tilt_weight == 0 or degrees <= 8):
@@ -99,8 +98,6 @@ def run_round(rig, *, goal, settle_timeout,
 
 @click.command()
 @click.option("--data", type=click.Path(path_type=Path), default=DATA)
-@click.option("--reference", type=click.Path(path_type=Path),
-              help="Optional saved orientation for nonzero tilt weight.")
 @click.option("--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
 @click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
@@ -109,23 +106,21 @@ def run_round(rig, *, goal, settle_timeout,
               show_default=True, help="Weight on squared tilt error normalized by 8 degrees.")
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
-def main(data, reference, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
+def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
     """Run one measured-loss homing round, using opposing tendon pairs."""
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
-    goal = load_home_reference(reference) if reference is not None else None
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
-        run_round(rig, goal=goal,
-                  settle_timeout=settle_timeout, position_weight=position_weight,
+        run_round(rig, settle_timeout=settle_timeout, position_weight=position_weight,
                   tilt_weight=tilt_weight, vertical_axis=vertical_axis)
 
     actions = np.array([paired_targets(motor, partner) - BASE
                         for pair in MOTOR_PAIRS for motor, partner in (pair, pair[::-1])])
     run_on_hardware(run, actions=actions, mode="round",
                     data=data, config=config, seed=0, world_translation=True,
-                    world_orientation=reference is None)
+                    world_orientation=True)
 
 
 if __name__ == "__main__":
