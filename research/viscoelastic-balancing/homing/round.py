@@ -16,17 +16,17 @@ def pose_errors(pose, goal):
     normal = rotation(pose).apply([0, 0, 1])
     reference_normal = rotation(goal).apply([0, 0, 1])
     angle = np.degrees(np.arccos(np.clip(abs(normal @ reference_normal), 0, 1)))
-    return np.linalg.norm(pose[:3] - goal[:3]), angle
+    return np.hypot(pose[0], pose[2]), angle
 
 
-def cost(pose, goal, *, position_weight=1.0, tilt_weight=1.0):
+def cost(pose, goal, *, position_weight=1.0, tilt_weight=0.0):
     mm, degrees = pose_errors(pose, goal)
     return np.hypot(np.sqrt(position_weight) * mm / 5,
                     np.sqrt(tilt_weight) * degrees / 8)
 
 
 def run_round(rig, *, goal, step, max_pull, settle_timeout,
-              position_weight=1.0, tilt_weight=1.0):
+              position_weight=1.0, tilt_weight=0.0):
     def loss_at(pose):
         return cost(pose, goal, position_weight=position_weight, tilt_weight=tilt_weight)
 
@@ -38,7 +38,7 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
         final_mm, final_tilt = pose_errors(final_pose, goal)
         initial_loss, final_loss = loss_at(initial_pose), loss_at(final_pose)
         rig.report("Round improvement at baseline (positive means closer to home)")
-        rig.report(f"  Position error {initial_mm:.2f} → {final_mm:.2f} mm "
+        rig.report(f"  XZ error {initial_mm:.2f} → {final_mm:.2f} mm "
                    f"({initial_mm - final_mm:+.2f} mm)")
         rig.report(f"  Tilt error {initial_tilt:.2f} → {final_tilt:.2f}° "
                    f"({initial_tilt - final_tilt:+.2f}°)")
@@ -66,8 +66,8 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
                 loss = loss_at(pose)
                 mm, degrees = pose_errors(pose, goal)
                 rig.report(f"m{motor} +{offset:.3f} kgf | settled baseline loss "
-                           f"{before_loss:.3f} → {loss:.3f} | {mm:.2f} mm, {degrees:.2f}° tilt")
-                if mm <= 5 and degrees <= 8:
+                           f"{before_loss:.3f} → {loss:.3f} | XZ error {mm:.2f} mm, {degrees:.2f}° tilt")
+                if mm <= 5 and (tilt_weight == 0 or degrees <= 8):
                     report_improvement(pose)
                     return
                 if loss >= before_loss:
@@ -81,15 +81,16 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
 
 @click.command()
 @click.option("--data", type=click.Path(path_type=Path), default=DATA)
-@click.option("--reference", type=click.Path(path_type=Path))
+@click.option("--reference", type=click.Path(path_type=Path),
+              help="Optional saved orientation for nonzero tilt weight.")
 @click.option("--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json")
 @click.option("--step", type=click.FloatRange(min=0.02, max=0.5), default=0.1, show_default=True)
 @click.option("--max-pull", type=click.FloatRange(min=0, min_open=True), default=0.5,
               show_default=True, help="Maximum pull offset above baseline in kgf.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
 @click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
-              show_default=True, help="Weight on squared position error normalized by 5 mm.")
-@click.option("--tilt-weight", type=click.FloatRange(min=0), default=1.0,
+              show_default=True, help="Weight on squared XZ error normalized by 5 mm.")
+@click.option("--tilt-weight", type=click.FloatRange(min=0), default=0.0,
               show_default=True, help="Weight on squared tilt error normalized by 8 degrees.")
 def main(data, reference, config, step, max_pull, settle_timeout, position_weight, tilt_weight):
     """Run one measured-loss homing round, one tendon at a time."""
@@ -97,7 +98,8 @@ def main(data, reference, config, step, max_pull, settle_timeout, position_weigh
         raise click.BadParameter("Must be finite.", param_hint="--max-pull")
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
-    goal = load_home_reference(reference or data / "home.json")
+    goal = (load_home_reference(reference) if reference is not None
+            else np.array([0., 0., 0., 0., 0., 0., 1.]))
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
