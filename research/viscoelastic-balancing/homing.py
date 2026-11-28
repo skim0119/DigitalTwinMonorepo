@@ -125,7 +125,8 @@ class Rig:
         self.controller.command(self.targets.tolist(), True, COMMAND_TTL_S)
         self.last_command = sent_at
 
-    def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30, axial_pose=False):
+    def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30, axial_pose=False,
+             local_normal=(0, 0, 1)):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
         self.report(
@@ -261,7 +262,6 @@ class Rig:
                 orientations = Rotation.from_quat(samples[:, 3:])
                 if axial_pose:
                     # The normal has two equivalent signs for a planar marker.
-                    local_normal = [0, 0, 1]
                     normals = orientations.apply(local_normal)
                     _, axes = np.linalg.eigh(normals.T @ normals)
                     orientation, _ = Rotation.align_vectors(axes[:, -1], local_normal)

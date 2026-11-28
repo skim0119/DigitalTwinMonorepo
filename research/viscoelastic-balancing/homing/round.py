@@ -12,10 +12,12 @@ from homing import BASE, DATA, HERE, MOTOR_PAIRS, SettleTimeout, run_on_hardware
 from probe_model import rotation
 
 
+LOCAL_Y = (0, 1, 0)
+
+
 def pose_errors(pose, *, vertical_axis="z"):
-    normal = rotation(pose).apply([0, 0, 1])
-    vertical = np.eye(3)["xyz".index(vertical_axis)]
-    angle = np.degrees(np.arccos(np.clip(abs(normal @ vertical), 0, 1)))
+    tip_y_in_base = rotation(pose).apply(LOCAL_Y)
+    angle = np.degrees(np.arccos(np.clip(abs(tip_y_in_base[1]), 0, 1)))
     horizontal = [index for index, axis in enumerate("xyz") if axis != vertical_axis]
     return np.linalg.norm(pose[horizontal]), angle
 
@@ -42,7 +44,7 @@ def run_round(rig, *, settle_timeout,
         return cost(pose, position_weight=position_weight, tilt_weight=tilt_weight,
                     vertical_axis=vertical_axis)
 
-    pose, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout, axial_pose=True)
+    pose, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout, axial_pose=True, local_normal=LOCAL_Y)
     initial_pose = pose.copy()
 
     def report_improvement(final_pose):
@@ -69,13 +71,13 @@ def run_round(rig, *, settle_timeout,
                 rig.report(f"Ping {ping}/{PINGS_PER_DIRECTION} | "
                            f"m{motor} +{PULL_KGF:.2f} kgf")
                 try:
-                    rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
+                    rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True, local_normal=LOCAL_Y)
                 except SettleTimeout as error:
                     rig.report(f"m{motor} | {error}. Returning to baseline.")
-                    pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
+                    pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True, local_normal=LOCAL_Y)
                     break
 
-                pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
+                pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True, local_normal=LOCAL_Y)
                 loss = loss_at(pose)
                 mm, degrees = pose_errors(pose, vertical_axis=vertical_axis)
                 rig.report(f"Settled baseline loss {before_loss:.3f} → {loss:.3f} "
@@ -101,7 +103,7 @@ def run_round(rig, *, settle_timeout,
 @click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
               show_default=True, help="Weight on squared horizontal error normalized by 5 mm.")
 @click.option("--tilt-weight", type=click.FloatRange(min=0), default=0.0,
-              show_default=True, help="Weight on squared tilt error normalized by 8 degrees.")
+              show_default=True, help="Weight on squared base-to-tip Y-axis angle normalized by 8 degrees.")
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
 def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
@@ -117,7 +119,7 @@ def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_ax
     actions = np.array([pull_targets(motor) - BASE for pair in MOTOR_PAIRS for motor in pair])
     run_on_hardware(run, actions=actions, mode="round",
                     data=data, config=config, seed=0, world_translation=True,
-                    world_orientation=True)
+                    world_orientation=False)
 
 
 if __name__ == "__main__":
