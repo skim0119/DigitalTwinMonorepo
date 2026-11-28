@@ -108,7 +108,7 @@ def main(data, reference, config, step, max_pull, settle_timeout, position_weigh
                   tilt_weight=tilt_weight)
 
     run_on_hardware(run, actions=max_pull * np.eye(len(BASE)), mode="round",
-                    data=data, config=config, seed=0)
+                    data=data, config=config, seed=0, world_translation=True)
 
 
 if __name__ == "__main__":

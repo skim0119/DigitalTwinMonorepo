@@ -35,7 +35,7 @@ SETTLE_MAX_SAMPLE_GAP_S = 0.15
 POSE_MAX_AGE_S = 0.25
 
 
-def tip_in_base(message):
+def tip_in_base(message, *, world_translation=False):
     bodies = {b.name: b.pose for b in message.poses}
     if not {"arm_base", "arm_tip"} <= bodies.keys():
         return None
@@ -47,7 +47,8 @@ def tip_in_base(message):
             return None
         poses.append(pose)
     delta = relative(*poses)
-    return np.r_[delta[:3], Rotation.from_rotvec(delta[3:]).as_quat()]
+    translation = poses[1][:3] - poses[0][:3] if world_translation else delta[:3]
+    return np.r_[translation, Rotation.from_rotvec(delta[3:]).as_quat()]
 
 
 def sweep_actions():
@@ -94,10 +95,11 @@ class SettleTimeout(RuntimeError):
 
 
 class Rig:
-    def __init__(self, controller, spin, log, force_limit, report=print):
+    def __init__(self, controller, spin, log, force_limit, report=print, *, world_translation=False):
         self.controller, self.spin, self.log = controller, spin, log
         self.limit = force_limit
         self.report = report
+        self.world_translation = world_translation
         self.stamp = self.pose = None
         self.memory = np.zeros((2, 6))
         self.last_pose = self.last_command = self.last = None
@@ -106,7 +108,7 @@ class Rig:
 
     def receive(self, msg):
         stamp = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
-        pose = tip_in_base(msg)
+        pose = tip_in_base(msg, world_translation=self.world_translation)
         if pose is not None and (self.stamp is None or stamp > self.stamp):
             self.stamp, self.pose = stamp, pose
 
@@ -606,7 +608,7 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
     )
 
 
-def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
+def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None, world_translation=False):
     import rclpy
     from control_core import open_controller, safety_limits
     try:
@@ -673,6 +675,7 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
                 kind="session",
                 version=1,
                 frame="arm_base/arm_tip",
+                translation_frame="mocap_world" if world_translation else "arm_base",
                 pose_units="mm, quaternion xyzw",
                 baseline_kgf=BASE.tolist(),
                 increment_kgf_s=INCREMENT_KGF_S,
@@ -693,7 +696,8 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
         )
         stack.callback(controller.stop)
         rig = Rig(
-            controller, lambda dt: rclpy.spin_once(node, timeout_sec=dt), log, limit, report=report
+            controller, lambda dt: rclpy.spin_once(node, timeout_sec=dt), log, limit, report=report,
+            world_translation=world_translation
         )
         node.create_subscription(
             NamedPoseArray,
