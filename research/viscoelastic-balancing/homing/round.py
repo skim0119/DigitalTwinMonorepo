@@ -27,14 +27,12 @@ def cost(pose, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
 
 
 PULL_KGF = 0.50
-RELEASE_KGF = 0.10
 PINGS_PER_DIRECTION = 3
 
 
-def paired_targets(motor, partner):
+def pull_targets(motor):
     targets = BASE.copy()
     targets[motor] += PULL_KGF
-    targets[partner] -= RELEASE_KGF
     return targets
 
 
@@ -63,17 +61,17 @@ def run_round(rig, *, settle_timeout,
     for pair in MOTOR_PAIRS:
         baseline_loss = loss_at(pose)
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
-        for motor, partner in (pair, pair[::-1]):
-            targets = paired_targets(motor, partner)
+        for motor in pair:
+            targets = pull_targets(motor)
             direction_start_loss = loss_at(pose)
             for ping in range(1, PINGS_PER_DIRECTION + 1):
                 before_loss = loss_at(pose)
                 rig.report(f"Ping {ping}/{PINGS_PER_DIRECTION} | "
-                           f"m{motor} +{PULL_KGF:.2f}, m{partner} -{RELEASE_KGF:.2f} kgf")
+                           f"m{motor} +{PULL_KGF:.2f} kgf")
                 try:
                     rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
                 except SettleTimeout as error:
-                    rig.report(f"m{motor}/m{partner} | {error}. Returning to baseline.")
+                    rig.report(f"m{motor} | {error}. Returning to baseline.")
                     pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
                     break
 
@@ -89,7 +87,7 @@ def run_round(rig, *, settle_timeout,
                 final_loss = loss_at(pose)
                 improved = final_loss < direction_start_loss
                 verdict = "improved" if improved else "did not improve"
-                rig.report(f"m{motor}/m{partner} {verdict} after {PINGS_PER_DIRECTION} pings "
+                rig.report(f"m{motor} {verdict} after {PINGS_PER_DIRECTION} pings "
                            f"| loss {direction_start_loss:.3f} → {final_loss:.3f}")
                 if improved:
                     break
@@ -107,7 +105,7 @@ def run_round(rig, *, settle_timeout,
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
 def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
-    """Run one measured-loss homing round, using opposing tendon pairs."""
+    """Run one measured-loss homing round, pulling one tendon at a time."""
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
     data.mkdir(parents=True, exist_ok=True)
@@ -116,8 +114,7 @@ def main(data, config, settle_timeout, position_weight, tilt_weight, vertical_ax
         run_round(rig, settle_timeout=settle_timeout, position_weight=position_weight,
                   tilt_weight=tilt_weight, vertical_axis=vertical_axis)
 
-    actions = np.array([paired_targets(motor, partner) - BASE
-                        for pair in MOTOR_PAIRS for motor, partner in (pair, pair[::-1])])
+    actions = np.array([pull_targets(motor) - BASE for pair in MOTOR_PAIRS for motor in pair])
     run_on_hardware(run, actions=actions, mode="round",
                     data=data, config=config, seed=0, world_translation=True,
                     world_orientation=True)
