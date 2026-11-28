@@ -22,7 +22,7 @@ def pose_errors(pose, *, vertical_axis="z"):
     return np.linalg.norm(pose[horizontal]), angle
 
 
-def cost(pose, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
+def cost(pose, *, position_weight=1.0, tilt_weight=1.0, vertical_axis="z"):
     mm, degrees = pose_errors(pose, vertical_axis=vertical_axis)
     return np.hypot(np.sqrt(position_weight) * mm / 5,
                     np.sqrt(tilt_weight) * degrees / 8)
@@ -40,7 +40,7 @@ def pull_targets(motor):
 
 
 def run_round(rig, *, settle_timeout,
-              position_weight=1.0, tilt_weight=0.0, vertical_axis="z",
+              position_weight=1.0, tilt_weight=1.0, vertical_axis="z",
               max_pings=DEFAULT_MAX_PINGS, min_improvement=DEFAULT_MIN_IMPROVEMENT):
     def loss_at(pose):
         return cost(pose, position_weight=position_weight, tilt_weight=tilt_weight,
@@ -103,7 +103,7 @@ def run_round(rig, *, settle_timeout,
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
 @click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
               show_default=True, help="Weight on squared horizontal error normalized by 5 mm.")
-@click.option("--tilt-weight", type=click.FloatRange(min=0), default=0.0,
+@click.option("--tilt-weight", type=click.FloatRange(min=0), default=1.0,
               show_default=True, help="Weight on squared base-to-tip Y-axis angle normalized by 8 degrees.")
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
