@@ -26,6 +26,20 @@ def cost(pose, goal):
 
 def run_round(rig, *, goal, step, max_pull, settle_timeout):
     pose, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout, axial_pose=True)
+    initial_pose = pose.copy()
+
+    def report_improvement(final_pose):
+        initial_mm, initial_tilt = pose_errors(initial_pose, goal)
+        final_mm, final_tilt = pose_errors(final_pose, goal)
+        initial_loss, final_loss = cost(initial_pose, goal), cost(final_pose, goal)
+        rig.report("Round improvement at baseline (positive means closer to home)")
+        rig.report(f"  Position error {initial_mm:.2f} → {final_mm:.2f} mm "
+                   f"({initial_mm - final_mm:+.2f} mm)")
+        rig.report(f"  Tilt error {initial_tilt:.2f} → {final_tilt:.2f}° "
+                   f"({initial_tilt - final_tilt:+.2f}°)")
+        rig.report(f"  Loss {initial_loss:.3f} → {final_loss:.3f} "
+                   f"({initial_loss - final_loss:+.3f})")
+
     for pair in MOTOR_PAIRS:
         baseline_loss = cost(pose, goal)
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
@@ -57,10 +71,12 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
             mm, degrees = pose_errors(pose, goal)
             rig.report(f"At baseline | {mm:.2f} mm, {degrees:.2f}° tilt, loss {cost(pose, goal):.3f}")
             if mm <= 5 and degrees <= 8:
+                report_improvement(pose)
                 return
             if best_loss < baseline_loss:
                 break
             baseline_loss = cost(pose, goal)
+    report_improvement(pose)
 
 
 @click.command()
