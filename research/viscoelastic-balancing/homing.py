@@ -322,7 +322,7 @@ def run_manual(rig, *, action, settle_timeout, goal=None):
         f"m{motor} {offset:+.3f} kgf (target {BASE[motor] + offset:.3f} kgf)"
         for motor, offset in enumerate(action) if offset
     )
-    rig.report(f"Activation | {activation}")
+    rig.report(f"Activation | {activation or 'Baseline hold'}")
     end = rig.probe(start, action, 0, settle_timeout=settle_timeout)
     if end is None:
         raise RuntimeError("Manual probe did not settle. Baseline verified.")
@@ -494,8 +494,10 @@ def load_home_reference(path):
 @click.option(
     "--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json"
 )
-@click.option("--pair", type=(int, int), metavar="MOTOR MOTOR",
-              help="Manual motor pair: 0 5, 1 3, or 2 4.")
+@click.option("--motor", "motor_offsets", type=(click.IntRange(0, 5), float), multiple=True,
+              metavar="MOTOR KGF", help="Manual motor and signed offset. Repeat for multiple motors.")
+@click.option("--pair", type=(click.IntRange(0, 5), click.IntRange(0, 5)), metavar="MOTOR MOTOR",
+              help="Manual shorthand for two motors. Use with --offsets.")
 @click.option("--offsets", type=(float, float), metavar="KGF KGF",
               help="Manual signed tension offsets in motor order.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=SWEEP_SETTLE_TIMEOUT_S,
@@ -505,19 +507,24 @@ def load_home_reference(path):
 @click.option("--max-probes", type=click.IntRange(min=1), help="Optional probe count limit.")
 @click.option("--max-seconds", type=click.IntRange(min=1), default=60, show_default=True,
               help="Time budget for predictive homing.")
-def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds, settle_timeout, pair, offsets):
+def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds, settle_timeout, pair, offsets, motor_offsets):
     """Collect and use baseline-to-baseline SE(3) probe responses."""
     if extra_data and mode != "train":
         raise click.UsageError("--extra-data requires train")
     if mode == "manual":
-        if pair is None or offsets is None:
-            raise click.UsageError("Manual mode requires --pair and --offsets.")
-        if tuple(sorted(pair)) not in MOTOR_PAIRS:
-            raise click.UsageError("Choose motor pair 0 5, 1 3, or 2 4.")
-        if not np.isfinite(offsets).all() or not any(offsets) or min(offsets) * max(offsets) > 0:
-            raise click.UsageError("Use finite opposite-sign offsets or one zero offset.")
-    elif pair is not None or offsets is not None:
-        raise click.UsageError("--pair and --offsets require manual mode.")
+        if pair is not None or offsets is not None:
+            if motor_offsets or pair is None or offsets is None:
+                raise click.UsageError("Use --motor, or use --pair and --offsets together.")
+            motor_offsets = tuple(zip(pair, offsets))
+        if not motor_offsets:
+            raise click.UsageError("Manual mode requires at least one --motor MOTOR KGF.")
+        motors, offsets = zip(*motor_offsets)
+        if len(set(motors)) != len(motors):
+            raise click.UsageError("Specify each motor only once.")
+        if not np.isfinite(offsets).all():
+            raise click.UsageError("Motor offsets must be finite.")
+    elif motor_offsets or pair is not None or offsets is not None:
+        raise click.UsageError("--motor, --pair, and --offsets require manual mode.")
     data.mkdir(parents=True, exist_ok=True)
 
     model = model or data / "probe_model.npz"
@@ -537,7 +544,7 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
                       max_seconds=max_seconds)
     elif mode == "manual":
         action = np.zeros_like(BASE)
-        action[list(pair)] = offsets
+        action[list(motors)] = offsets
         actions = action[None, :]
         manual_goal = load_home_reference(reference) if explicit_reference or reference.exists() else None
         run = partial(run_manual, action=action, settle_timeout=settle_timeout, goal=manual_goal)
