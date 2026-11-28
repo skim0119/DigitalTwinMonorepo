@@ -126,7 +126,7 @@ class Rig:
         self.last_command = sent_at
 
     def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30, axial_pose=False,
-             local_normal=(0, 0, 1)):
+             local_normal=(0, 0, 1), pose_timeout=POSE_MAX_AGE_S, pose_check=None):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
         self.report(
@@ -161,7 +161,7 @@ class Rig:
                     f"ROS poll and callback: {now - poll_start:.3f} s)"
                 )
             ready = self.controller.ready()
-            if phase != "return" and self.last is not None and now - self.last_pose >= POSE_MAX_AGE_S:
+            if phase != "return" and self.last is not None and now - self.last_pose >= pose_timeout:
                 raise RuntimeError(
                     f"{phase}: no new valid arm_base/arm_tip pose for "
                     f"{now - self.last_pose:.3f} s (load cells ready={ready})"
@@ -257,6 +257,8 @@ class Rig:
             if goal is not None:
                 mm, deg = pose_errors(self.pose, goal)
                 within_goal &= mm <= 5 and deg <= 8
+            if pose_check is not None:
+                within_goal &= pose_check(self.pose)
             if now - stable >= duration:
                 samples = np.array(poses)
                 orientations = Rotation.from_quat(samples[:, 3:])
