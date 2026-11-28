@@ -85,7 +85,7 @@ class ProbeTest(unittest.TestCase):
         samples = []
         def spin(dt):
             clock[0] += dt
-            if not 0.1 < clock[0] < 0.29:
+            if not 0.1 < clock[0] < 0.55:
                 rig.stamp = clock[0]
         controller = SimpleNamespace(ready=lambda: True,
                                      command=lambda target, *_: commands.append(target),
@@ -93,12 +93,15 @@ class ProbeTest(unittest.TestCase):
         rig = Rig(controller, spin, samples.append, 4.5)
         rig.pose = np.array([0, 0, 0, 0, 0, 0, 1])
         with patch('homing.time.monotonic', lambda: clock[0]):
+            rig.targets[5] = 0.14
             rig.hold(BASE, "return", duration=0.25)
-            self.assertGreater(clock[0], 0.5)
+            self.assertGreater(clock[0], 0.75)
+            self.assertLess(commands[4][5], commands[1][5])
+            self.assertAlmostEqual(commands[-1][5], BASE[5])
             self.assertGreater(len(commands), len(samples))
             rig.spin = lambda dt: clock.__setitem__(0, clock[0] + dt)
             with self.assertRaisesRegex(RuntimeError, 'no new valid'):
-                rig.hold(BASE, "return")
+                rig.hold(BASE, "verify")
             recovered_at = clock[0] + 0.3
             controller.ready = lambda: clock[0] >= recovered_at
             rig.spin = spin

@@ -155,7 +155,7 @@ class Rig:
                     f"ROS poll and callback: {now - poll_start:.3f} s)"
                 )
             ready = self.controller.ready()
-            if self.last is not None and now - self.last_pose >= POSE_MAX_AGE_S:
+            if phase != "return" and self.last is not None and now - self.last_pose >= POSE_MAX_AGE_S:
                 raise RuntimeError(
                     f"{phase}: no new valid arm_base/arm_tip pose for "
                     f"{now - self.last_pose:.3f} s (load cells ready={ready})"
@@ -181,7 +181,7 @@ class Rig:
                     raise RuntimeError(
                         f"{phase}: load-cell feedback unavailable for 1 s"
                     )
-            if not ready or not fresh_pose:
+            if not ready or (not fresh_pose and phase != "return"):
                 if self.last is not None:
                     # Native PID pauses stale channels and faults on persistent loss.
                     self.refresh_command()
@@ -213,6 +213,11 @@ class Rig:
                 end - self.targets, -DECREMENT_KGF_S * dt, INCREMENT_KGF_S * dt
             )
             self.refresh_command()
+            if not fresh_pose:
+                # Return tension using load cells while waiting for a new pose sample.
+                stable = None
+                poses.clear()
+                continue
             self.log(
                 dict(
                     kind="sample",
