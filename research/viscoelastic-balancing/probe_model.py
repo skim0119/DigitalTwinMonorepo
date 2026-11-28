@@ -1,9 +1,10 @@
-"""Local regression of body-frame motion after a complete tendon probe."""
+"""Regularized regression of body-frame motion after a complete tendon probe."""
 
 import json
 from pathlib import Path
 
 import numpy as np
+from scipy.linalg import lstsq
 from scipy.spatial.transform import Rotation
 
 
@@ -34,36 +35,77 @@ def cost(pose, goal):
     return np.hypot(mm / 5, degrees / 8)
 
 
-def distances(poses, memories, pose, memory):
-    # Neighbourhood widths: mm, degrees and kgf. Rotation distance is geodesic.
-    translation = np.linalg.norm(poses[:, :3] - pose[:3], axis=1) / 10
-    angle = (rotation(pose).inv() * Rotation.from_quat(poses[:, 3:])).magnitude()
-    history = np.linalg.norm(memories - memory, axis=1) / 0.1
-    return np.sqrt(translation**2 + (angle / np.radians(15)) ** 2 + history**2)
+POSE_SCALE = np.array([20.0] * 3 + [np.radians(20)] * 3)
+
+
+def left_jacobian(omega):
+    x, y, z = omega
+    skew = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
+    angle = np.linalg.norm(omega)
+    if angle < 1e-4:
+        return np.eye(3) + 0.5 * skew + (skew @ skew) / 6
+    return (np.eye(3) + (1 - np.cos(angle)) / angle**2 * skew
+            + (angle - np.sin(angle)) / angle**3 * (skew @ skew))
+
+
+def log_coordinates(change):
+    omega = change[3:]
+    return np.r_[np.linalg.solve(left_jacobian(omega), change[:3]), omega]
+
+
+def exp_coordinates(twist):
+    omega = twist[3:]
+    return np.r_[left_jacobian(omega) @ twist[:3], omega]
+
+
+def features(state, action):
+    scaled = action / 0.25
+    pull = np.maximum(scaled, 0)
+    release = np.minimum(scaled, 0)
+    signed = np.r_[pull, release]
+    return np.r_[1.0, state, signed, signed * np.abs(signed),
+                 np.outer(signed, state).ravel()]
 
 
 class ProbeModel:
     def __init__(self, poses=None, memories=None, actions=None, changes=None):
         self.poses, self.memories = poses, memories
         self.actions, self.changes = actions, changes
+        if poses is not None:
+            self._fit_regression()
 
     def fit(self, rows):
         self.poses, self.memories, self.actions, self.changes = (
             np.asarray([row[key] for row in rows], dtype=float)
             for key in ("start", "memory", "action", "change")
         )
+        self._fit_regression()
         return self
 
+    def _state(self, pose, memory):
+        pose_coordinates = log_coordinates(relative(self.anchor, pose)) / POSE_SCALE
+        return np.r_[pose_coordinates, (memory - self.memory_center) / 0.1]
+
+    def _fit_regression(self):
+        self.anchor = np.r_[self.poses[:, :3].mean(axis=0),
+                            Rotation.from_quat(self.poses[:, 3:]).mean().as_quat()]
+        self.memory_center = self.memories.mean(axis=0)
+        design = np.array([features(self._state(pose, memory), action)
+                           for pose, memory, action in zip(self.poses, self.memories, self.actions)])
+        target = np.array([log_coordinates(change) for change in self.changes])
+        penalty = np.full(design.shape[1], 1.0)
+        penalty[0] = 0
+        penalty[-12 * (6 + self.memories.shape[1]):] = 10.0  # Shrink state interactions.
+        augmented_design = np.vstack((design, np.diag(np.sqrt(penalty))))
+        augmented_target = np.vstack((target, np.zeros((design.shape[1], target.shape[1]))))
+        self.coefficients = lstsq(augmented_design, augmented_target)[0]
+        self.candidates = np.unique(self.actions, axis=0)
+
     def predictions(self, pose, memory):
-        distance = distances(self.poses, self.memories, pose, memory)
-        for action in np.unique(self.actions, axis=0):
-            indices = np.flatnonzero((self.actions == action).all(axis=1))
-            nearest = indices[np.argsort(distance[indices])[:5]]
-            nearest = nearest[distance[nearest] <= 3]
-            if len(nearest):
-                weights = np.exp(-0.5 * distance[nearest] ** 2)
-                delta = np.average(self.changes[nearest], axis=0, weights=weights)
-                yield action, compose(pose, delta)
+        state = self._state(pose, memory)
+        for action in self.candidates:
+            twist = features(state, action) @ self.coefficients
+            yield action, compose(pose, exp_coordinates(twist))
 
     def choose(self, pose, memory, goal, *, duration=None):
         current_cost = cost(pose, goal)

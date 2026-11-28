@@ -75,7 +75,9 @@ class ProbeTest(unittest.TestCase):
             self.assertFalse(reached)
             far = goal.copy()
             far[0] = 1000
-            self.assertIsNone(model.choose(far, rig.memory.ravel(), goal))
+            predictions = list(model.predictions(far, rig.memory.ravel()))
+            self.assertEqual(len(predictions), 55)
+            self.assertTrue(all(np.isfinite(pred).all() for _, pred in predictions))
 
     def test_delayed_return_frame(self):
         clock = [0.]

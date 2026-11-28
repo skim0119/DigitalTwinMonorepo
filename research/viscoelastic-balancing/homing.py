@@ -4,10 +4,12 @@ import fcntl
 import json
 import os
 import time
-from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from queue import SimpleQueue
 
 import click
 import numpy as np
@@ -62,10 +64,35 @@ def sweep_actions():
     return np.array(actions)
 
 
+@contextmanager
+def background_writer(write):
+    pending = SimpleQueue()
+    stop = object()
+
+    def drain():
+        for item in iter(pending.get, stop):
+            write(item)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(drain)
+
+        def submit(item):
+            if worker.done():
+                worker.result()
+            pending.put(item)
+
+        try:
+            yield submit
+        finally:
+            pending.put(stop)
+            worker.result()
+
+
 class Rig:
-    def __init__(self, controller, spin, log, force_limit):
+    def __init__(self, controller, spin, log, force_limit, report=print):
         self.controller, self.spin, self.log = controller, spin, log
         self.limit = force_limit
+        self.report = report
         self.stamp = self.pose = None
         self.memory = np.zeros((2, 6))
         self.last_pose = self.last_command = self.last = None
@@ -91,7 +118,7 @@ class Rig:
     def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
-        print(
+        self.report(
             f"  {phase}: waiting for feedback and {duration:g} s at target", flush=True
         )
         begin = time.monotonic()
@@ -130,7 +157,7 @@ class Rig:
             if report:
                 next_report = now + 3
                 if not ready or not fresh_pose:
-                    print(
+                    self.report(
                         f"  {phase} {now - begin:.0f}s: new pose={fresh_pose}, "
                         f"load cells ready={ready}",
                         flush=True,
@@ -197,7 +224,7 @@ class Rig:
             )
             if report:
                 worst = int(np.argmax(abs(forces - end)))
-                print(
+                self.report(
                     f"  {phase} {now - begin:.0f}s: largest target error on m{worst}, "
                     f"measured {forces[worst]:.3f} / goal {end[worst]:.3f} kgf",
                     flush=True,
@@ -262,7 +289,7 @@ def run_sweep(rig, *, actions, blocks, seed):
         started = time.monotonic()
         for n, i in enumerate(rng.permutation(len(actions)), 1):
             offsets = " ".join(f"m{j}{v:+.2f}" for j, v in enumerate(actions[i]) if v)
-            print(
+            rig.report(
                 f"Block {block + 1}/{blocks}, probe {n}/{len(actions)}: "
                 f"{offsets + ' kgf' if offsets else 'baseline only'}",
                 flush=True,
@@ -272,12 +299,12 @@ def run_sweep(rig, *, actions, blocks, seed):
             elapsed = time.monotonic() - started
             if n < len(actions):
                 remaining = elapsed / n * (len(actions) - n)
-                print(
+                rig.report(
                     f"  Recorded. Block elapsed {elapsed:.0f}s, "
                     f"about {remaining:.0f}s remaining",
                     flush=True,
                 )
-        print(
+        rig.report(
             f"Completed sweep block {block + 1}/{blocks} in {elapsed:.1f}s",
             flush=True,
         )
@@ -305,7 +332,7 @@ def run_prediction(rig, *, model, goal, max_probes=None, max_seconds=60):
         while time.monotonic() < deadline:
             pose, reached = rig.hold(BASE, "verify", goal=goal, deadline=deadline)
             mm, deg = pose_errors(pose, goal)
-            print(f"After {step} probes: {mm:.2f} mm, {deg:.2f} deg", flush=True)
+            rig.report(f"After {step} probes: {mm:.2f} mm, {deg:.2f} deg", flush=True)
             if reached:
                 return
             if step == max_probes:
@@ -510,8 +537,16 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
         if goal is not None:
             diagnostics.callback(save_homing_diagnostics, path, goal)
 
-        def log(record):
+        def write_record(record):
             stream.write(json.dumps(record, allow_nan=False) + "\n")
+
+        log = stack.enter_context(background_writer(write_record))
+        write_progress = stack.enter_context(
+            background_writer(lambda message: print(message, flush=True))
+        )
+
+        def report(*parts, flush=False):
+            write_progress(" ".join(str(part) for part in parts))
 
         log(
             dict(
@@ -538,7 +573,7 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
         )
         stack.callback(controller.stop)
         rig = Rig(
-            controller, lambda dt: rclpy.spin_once(node, timeout_sec=dt), log, limit
+            controller, lambda dt: rclpy.spin_once(node, timeout_sec=dt), log, limit, report=report
         )
         node.create_subscription(
             NamedPoseArray,
@@ -546,7 +581,7 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None):
             rig.receive,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
-        print("Recording", path, flush=True)
+        report("Recording", path)
         try:
             run(rig)
             if goal is not None:
