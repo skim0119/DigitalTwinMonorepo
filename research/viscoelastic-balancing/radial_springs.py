@@ -23,7 +23,8 @@ MODE_INPUT = MODAL_STIFFNESS * (-np.expm1(-DT / RELAXATION_TIMES)) * RELAXATION_
 
 
 class RadialSprings:
-    def __init__(self):
+    def __init__(self, yield_extension=YIELD_EXTENSION):
+        self.yield_extension = yield_extension
         angles = np.arange(6) * np.pi / 3
         self.anchors = ANCHOR_RADIUS * np.column_stack((np.cos(angles), np.sin(angles)))
         self.reset()
@@ -44,7 +45,7 @@ class RadialSprings:
         self.extension = extension
 
         # Return mapping for the spring and slider in the plastic branch.
-        self.slip = np.clip(self.slip, extension - YIELD_EXTENSION, extension + YIELD_EXTENSION)
+        self.slip = np.clip(self.slip, extension - self.yield_extension, extension + self.yield_extension)
         self.force = (
             EQUILIBRIUM_STIFFNESS * extension
             + self.modal_force.sum(axis=1)
@@ -57,12 +58,15 @@ class RadialSprings:
         if length > 1e-9:
             self.velocity += CLICK_IMPULSE / MASS * direction / length
 
-    def step(self):
+    def step(self, external_force=None):
         offsets = self.anchors - self.position
         lengths = np.linalg.norm(offsets, axis=1)
         self.update_material(lengths - ANCHOR_RADIUS)
         axes = offsets / np.maximum(lengths[:, None], 1e-9)
-        self.velocity += DT / MASS * (self.force @ axes)
+        net_force = self.force @ axes
+        if external_force is not None:
+            net_force += external_force
+        self.velocity += DT / MASS * net_force
         self.position += DT * self.velocity
 
 
