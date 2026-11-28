@@ -509,11 +509,8 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
             raise click.UsageError("Manual mode requires --pair and --offsets.")
         if tuple(sorted(pair)) not in MOTOR_PAIRS:
             raise click.UsageError("Choose motor pair 0 5, 1 3, or 2 4.")
-        if (not np.isfinite(offsets).all() or not any(offsets) or min(offsets) * max(offsets) > 0
-                or min(offsets) < -float(BASE[0]) or max(offsets) > max(PULL_OFFSETS_KGF)):
-            raise click.UsageError(
-                f"Use opposite-sign offsets or one zero offset, between {-BASE[0]:g} and {max(PULL_OFFSETS_KGF):g} kgf."
-            )
+        if not np.isfinite(offsets).all() or not any(offsets) or min(offsets) * max(offsets) > 0:
+            raise click.UsageError("Use finite opposite-sign offsets or one zero offset.")
     elif pair is not None or offsets is not None:
         raise click.UsageError("--pair and --offsets require manual mode.")
     data.mkdir(parents=True, exist_ok=True)
