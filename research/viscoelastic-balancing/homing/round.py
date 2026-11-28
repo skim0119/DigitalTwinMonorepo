@@ -27,7 +27,19 @@ def cost(pose, goal, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z")
                     np.sqrt(tilt_weight) * degrees / 8)
 
 
-def run_round(rig, *, goal, step, max_pull, settle_timeout,
+PULL_KGF = 0.50
+RELEASE_KGF = 0.10
+PINGS_PER_DIRECTION = 3
+
+
+def paired_targets(motor, partner):
+    targets = BASE.copy()
+    targets[motor] += PULL_KGF
+    targets[partner] -= RELEASE_KGF
+    return targets
+
+
+def run_round(rig, *, goal, settle_timeout,
               position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
     def loss_at(pose):
         return cost(pose, goal, position_weight=position_weight, tilt_weight=tilt_weight,
@@ -52,34 +64,36 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
     for pair in MOTOR_PAIRS:
         baseline_loss = loss_at(pose)
         rig.report(f"Pair {pair[0]}/{pair[1]} | baseline loss {baseline_loss:.3f}")
-        for motor in pair:
-            targets = BASE.copy()
-            offset = 0.0
-            while offset < max_pull:
+        for motor, partner in (pair, pair[::-1]):
+            targets = paired_targets(motor, partner)
+            direction_start_loss = loss_at(pose)
+            for ping in range(1, PINGS_PER_DIRECTION + 1):
                 before_loss = loss_at(pose)
-                offset = min(offset + step, max_pull)
-                targets[motor] = BASE[motor] + offset
+                rig.report(f"Ping {ping}/{PINGS_PER_DIRECTION} | "
+                           f"m{motor} +{PULL_KGF:.2f}, m{partner} -{RELEASE_KGF:.2f} kgf")
                 try:
                     rig.hold(targets, "pull", settle_timeout=settle_timeout, axial_pose=True)
                 except SettleTimeout as error:
-                    rig.report(f"m{motor} | {error}. Returning to baseline.")
+                    rig.report(f"m{motor}/m{partner} | {error}. Returning to baseline.")
                     pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
                     break
 
                 pose, _ = rig.hold(BASE, "return", settle_timeout=settle_timeout, axial_pose=True)
                 loss = loss_at(pose)
                 mm, degrees = pose_errors(pose, goal, vertical_axis=vertical_axis)
-                rig.report(f"m{motor} +{offset:.3f} kgf | settled baseline loss "
-                           f"{before_loss:.3f} → {loss:.3f} | horizontal error {mm:.2f} mm, {degrees:.2f}° tilt")
+                rig.report(f"Settled baseline loss {before_loss:.3f} → {loss:.3f} "
+                           f"| horizontal error {mm:.2f} mm, {degrees:.2f}° tilt")
                 if mm <= 5 and (tilt_weight == 0 or degrees <= 8):
                     report_improvement(pose)
                     return
-                if loss >= before_loss:
-                    rig.report(f"m{motor} | settled loss did not decrease. Ending this direction.")
-                    break
             else:
-                rig.report(f"m{motor} | reached +{max_pull:.3f} kgf pull limit")
-                break
+                final_loss = loss_at(pose)
+                improved = final_loss < direction_start_loss
+                verdict = "improved" if improved else "did not improve"
+                rig.report(f"m{motor}/m{partner} {verdict} after {PINGS_PER_DIRECTION} pings "
+                           f"| loss {direction_start_loss:.3f} → {final_loss:.3f}")
+                if improved:
+                    break
     report_improvement(pose)
 
 
@@ -88,9 +102,6 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
 @click.option("--reference", type=click.Path(path_type=Path),
               help="Optional saved orientation for nonzero tilt weight.")
 @click.option("--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json")
-@click.option("--step", type=click.FloatRange(min=0.02, max=0.5), default=0.1, show_default=True)
-@click.option("--max-pull", type=click.FloatRange(min=0, min_open=True), default=0.5,
-              show_default=True, help="Maximum pull offset above baseline in kgf.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
 @click.option("--position-weight", type=click.FloatRange(min=0), default=1.0,
               show_default=True, help="Weight on squared horizontal error normalized by 5 mm.")
@@ -98,21 +109,21 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout,
               show_default=True, help="Weight on squared tilt error normalized by 8 degrees.")
 @click.option("--vertical-axis", type=click.Choice(["x", "y", "z"]), default="z",
               show_default=True, help="Vertical axis in the mocap world frame.")
-def main(data, reference, config, step, max_pull, settle_timeout, position_weight, tilt_weight, vertical_axis):
-    """Run one measured-loss homing round, one tendon at a time."""
-    if not math.isfinite(max_pull):
-        raise click.BadParameter("Must be finite.", param_hint="--max-pull")
+def main(data, reference, config, settle_timeout, position_weight, tilt_weight, vertical_axis):
+    """Run one measured-loss homing round, using opposing tendon pairs."""
     if not all(map(math.isfinite, (position_weight, tilt_weight))) or max(position_weight, tilt_weight) == 0:
         raise click.UsageError("Use finite weights with at least one positive weight.")
     goal = load_home_reference(reference) if reference is not None else None
     data.mkdir(parents=True, exist_ok=True)
 
     def run(rig):
-        run_round(rig, goal=goal, step=step, max_pull=max_pull,
+        run_round(rig, goal=goal,
                   settle_timeout=settle_timeout, position_weight=position_weight,
                   tilt_weight=tilt_weight, vertical_axis=vertical_axis)
 
-    run_on_hardware(run, actions=max_pull * np.eye(len(BASE)), mode="round",
+    actions = np.array([paired_targets(motor, partner) - BASE
+                        for pair in MOTOR_PAIRS for motor, partner in (pair, pair[::-1])])
+    run_on_hardware(run, actions=actions, mode="round",
                     data=data, config=config, seed=0, world_translation=True,
                     world_orientation=reference is None)
 
