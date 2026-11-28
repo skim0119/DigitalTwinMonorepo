@@ -271,7 +271,7 @@ class Rig:
             self.log(dict(kind="skipped_probe", cycle=self.cycle, block=block,
                           action=action.tolist(), reason=str(error)))
             self.cycle += 1
-            return False
+            return None
         except TimeoutError:
             self.hold(BASE, "return", deadline=deadline, settle_timeout=settle_timeout)
             raise RuntimeError("Time budget reached during probe. Returned to baseline.") from None
@@ -289,7 +289,7 @@ class Rig:
             )
         )
         self.cycle += 1
-        return True
+        return end
 
 
 def capture_reference(rig, *, reference):
@@ -297,6 +297,27 @@ def capture_reference(rig, *, reference):
     with reference.open("x") as stream:
         json.dump(dict(frame="arm_base/arm_tip", pose=pose.tolist()), stream)
     print("Saved home pose to", reference)
+
+
+def run_manual(rig, *, action, settle_timeout):
+    def report_pose(label, pose):
+        xyz = ", ".join(f"{value:.2f}" for value in pose[:3])
+        quaternion = ", ".join(f"{value:.5f}" for value in pose[3:])
+        rig.report(f"{label} | xyz mm [{xyz}] | quaternion xyzw [{quaternion}]")
+
+    start, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout)
+    report_pose("Before pose", start)
+    activation = ", ".join(
+        f"m{motor} {offset:+.3f} kgf (target {BASE[motor] + offset:.3f} kgf)"
+        for motor, offset in enumerate(action) if offset
+    )
+    rig.report(f"Activation | {activation}")
+    end = rig.probe(start, action, 0, settle_timeout=settle_timeout)
+    if end is None:
+        raise RuntimeError("Manual probe did not settle. Baseline verified.")
+    report_pose("After pose at baseline", end)
+    mm, degrees = pose_errors(start, end)
+    rig.report(f"Pose change | {mm:.2f} mm, {degrees:.2f}°")
 
 
 def run_sweep(rig, *, actions, blocks, seed, settle_timeout=SWEEP_SETTLE_TIMEOUT_S):
@@ -312,7 +333,7 @@ def run_sweep(rig, *, actions, blocks, seed, settle_timeout=SWEEP_SETTLE_TIMEOUT
             )
             start, _ = rig.hold(BASE, "baseline", settle_timeout=settle_timeout)
             recorded = rig.probe(start, actions[i], block, settle_timeout=settle_timeout)
-            if not recorded:
+            if recorded is None:
                 rig.report("  Probe skipped after settling timeout. Baseline verified.", flush=True)
             elapsed = time.monotonic() - started
             if n < len(actions):
@@ -434,7 +455,7 @@ def save_homing_diagnostics(path, goal):
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("mode", type=click.Choice(["reference", "sweep", "train", "predict"]))
+@click.argument("mode", type=click.Choice(["reference", "sweep", "train", "predict", "manual"]))
 @click.option("--data", type=click.Path(path_type=Path), default=DATA)
 @click.option("--extra-data", type=click.Path(path_type=Path, exists=True, file_okay=False),
               multiple=True, help="Additional sweep directory for training. Repeat to combine directories.")
@@ -443,6 +464,10 @@ def save_homing_diagnostics(path, goal):
 @click.option(
     "--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json"
 )
+@click.option("--pair", type=(int, int), metavar="MOTOR MOTOR",
+              help="Manual motor pair: 0 5, 1 3, or 2 4.")
+@click.option("--offsets", type=(float, float), metavar="KGF KGF",
+              help="Manual signed tension offsets in motor order.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=SWEEP_SETTLE_TIMEOUT_S,
               show_default=True, help="Sweep time limit in seconds per baseline, probe, or return phase.")
 @click.option("--blocks", type=click.IntRange(min=1), default=3, show_default=True)
@@ -450,10 +475,22 @@ def save_homing_diagnostics(path, goal):
 @click.option("--max-probes", type=click.IntRange(min=1), help="Optional probe count limit.")
 @click.option("--max-seconds", type=click.IntRange(min=1), default=60, show_default=True,
               help="Time budget for predictive homing.")
-def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds, settle_timeout):
+def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_probes, max_seconds, settle_timeout, pair, offsets):
     """Collect and use baseline-to-baseline SE(3) probe responses."""
     if extra_data and mode != "train":
         raise click.UsageError("--extra-data requires train")
+    if mode == "manual":
+        if pair is None or offsets is None:
+            raise click.UsageError("Manual mode requires --pair and --offsets.")
+        if tuple(sorted(pair)) not in MOTOR_PAIRS:
+            raise click.UsageError("Choose motor pair 0 5, 1 3, or 2 4.")
+        if (not np.isfinite(offsets).all() or min(offsets) >= 0 or max(offsets) <= 0
+                or min(offsets) < -float(BASE[0]) or max(offsets) > max(PULL_OFFSETS_KGF)):
+            raise click.UsageError(
+                f"Use opposite-sign offsets between {-BASE[0]:g} and {max(PULL_OFFSETS_KGF):g} kgf."
+            )
+    elif pair is not None or offsets is not None:
+        raise click.UsageError("--pair and --offsets require manual mode.")
     data.mkdir(parents=True, exist_ok=True)
 
     model = model or data / "probe_model.npz"
@@ -484,6 +521,11 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
             raise click.UsageError("Model has no probes within the current pull limit")
         run = partial(run_prediction, model=model, goal=goal, max_probes=max_probes,
                       max_seconds=max_seconds)
+    elif mode == "manual":
+        action = np.zeros_like(BASE)
+        action[list(pair)] = offsets
+        actions = action[None, :]
+        run = partial(run_manual, action=action, settle_timeout=settle_timeout)
     elif mode == "sweep":
         actions = sweep_actions()
         run = partial(run_sweep, actions=actions, blocks=blocks, seed=seed,
