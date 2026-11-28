@@ -1,4 +1,5 @@
 """Visit each opposing motor pair once using measured pose error."""
+import math
 import sys
 from pathlib import Path
 
@@ -67,10 +68,13 @@ def run_round(rig, *, goal, step, max_pull, settle_timeout):
 @click.option("--reference", type=click.Path(path_type=Path))
 @click.option("--config", type=click.Path(path_type=Path), default=HERE.parents[1] / "pins.json")
 @click.option("--step", type=click.FloatRange(min=0.02, max=0.5), default=0.1, show_default=True)
-@click.option("--max-pull", type=click.FloatRange(min=0.02, max=0.5), default=0.5, show_default=True)
+@click.option("--max-pull", type=click.FloatRange(min=0, min_open=True), default=0.5,
+              show_default=True, help="Maximum pull offset above baseline in kgf.")
 @click.option("--settle-timeout", type=click.IntRange(min=1), default=90, show_default=True)
 def main(data, reference, config, step, max_pull, settle_timeout):
     """Run one measured-loss homing round, one tendon at a time."""
+    if not math.isfinite(max_pull):
+        raise click.BadParameter("Must be finite.", param_hint="--max-pull")
     goal = load_home_reference(reference or data / "home.json")
     data.mkdir(parents=True, exist_ok=True)
 
