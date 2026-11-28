@@ -130,7 +130,8 @@ class Rig:
         self.last_command = sent_at
 
     def hold(self, end, phase, duration=HOLD_S, goal=None, *, deadline=None, settle_timeout=30, axial_pose=False,
-             local_normal=(0, 0, 1), pose_timeout=POSE_MAX_AGE_S, pose_check=None):
+             local_normal=(0, 0, 1), pose_timeout=POSE_MAX_AGE_S, pose_check=None,
+             sample_stop=None, decrement_rate=DECREMENT_KGF_S):
         if not np.isfinite(end).all() or min(end) < 0 or max(end) >= self.limit:
             raise ValueError("Probe target outside configured force limits")
         self.report(
@@ -220,7 +221,7 @@ class Rig:
                 forces - BASE - self.memory
             )
             self.targets += np.clip(
-                end - self.targets, -DECREMENT_KGF_S * dt, INCREMENT_KGF_S * dt
+                end - self.targets, -decrement_rate * dt, INCREMENT_KGF_S * dt
             )
             self.refresh_command()
             if not fresh_pose:
@@ -240,6 +241,8 @@ class Rig:
                     force=forces.tolist(),
                 )
             )
+            if sample_stop is not None and sample_stop(self.pose, forces, now):
+                return self.pose.copy(), False
             settled = (
                 np.allclose(self.targets, end, atol=1e-9, rtol=0)
                 and max(abs(forces - end)) <= 0.02
