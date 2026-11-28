@@ -95,6 +95,10 @@ class SettleTimeout(RuntimeError):
     """Feedback stayed available, but the target did not settle."""
 
 
+class MocapTimeout(RuntimeError):
+    """The base or tip pose stopped updating."""
+
+
 class Rig:
     def __init__(self, controller, spin, log, force_limit, report=print, *, world_translation=False, world_orientation=False):
         self.controller, self.spin, self.log = controller, spin, log
@@ -162,7 +166,7 @@ class Rig:
                 )
             ready = self.controller.ready()
             if phase != "return" and self.last is not None and now - self.last_pose >= pose_timeout:
-                raise RuntimeError(
+                raise MocapTimeout(
                     f"{phase}: no new valid arm_base/arm_tip pose for "
                     f"{now - self.last_pose:.3f} s (load cells ready={ready})"
                 )
@@ -613,7 +617,7 @@ def main(*, mode, data, extra_data, model, reference, config, blocks, seed, max_
     )
 
 
-def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None, world_translation=False, world_orientation=False):
+def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None, world_translation=False, world_orientation=False, force_cap=MAX_TENSION_KGF):
     import rclpy
     from control_core import open_controller, safety_limits
     try:
@@ -631,7 +635,7 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None, world_
 
     settings = json.loads(config.read_text())
     limit, rate = safety_limits(settings)
-    limit = min(limit, MAX_TENSION_KGF)
+    limit = min(limit, MAX_TENSION_KGF, force_cap)
     steps = settings.get("max_tightening_steps", 3000)
     peaks = BASE + actions
     if (
@@ -684,6 +688,7 @@ def run_on_hardware(run, *, actions, mode, data, config, seed, goal=None, world_
                 translation_frame="mocap_world" if world_translation else "arm_base",
                 pose_units="mm, quaternion xyzw",
                 baseline_kgf=BASE.tolist(),
+                force_limit_kgf=limit,
                 increment_kgf_s=INCREMENT_KGF_S,
                 decrement_kgf_s=DECREMENT_KGF_S,
                 memory_seconds=MEMORY_SECONDS,
