@@ -35,21 +35,20 @@ Boost headers, and a ROS 2 workspace configured to publish mocap on
 
 ```sh
 cd ~/spirob_py_code
-make install
 make setup-pi
-systemctl status "spirob-gpio@$USER.service" "spirob-mocap@$USER.service"
+systemctl status "spirob-gpio@$USER.service" "spirob-mocap@$USER.service" "spirob-experiment@$USER.service"
 ```
 
 `make install` creates or reuses `.venv` and installs the local Python packages
 in editable mode. Pass `PYTHON=/path/to/python3` to choose the interpreter when
-creating a new environment. `make setup-pi` builds the streamer and starts the
-GPIO and mocap services at boot.
+creating a new environment. `make setup-pi` installs those packages into
+`.venv`, builds the streamer, and enables the GPIO, mocap, and experiment
+runner services at boot.
 
-Stop any manually launched copies of the two sensor processes before setup.
-After setup, remove any lines in `~/.bashrc` that launch them. See the
-[Pi service guide](deploy/README.md) for migrating from the old HTTP service,
-running an experiment over SSH, and uninstalling the services with
-`make remove-pi`.
+Before setup, remove any process launch blocks from `~/.bashrc` and stop
+manually launched copies of the services. See the
+[Pi service guide](deploy/README.md) for connecting to the experiment server
+over SSH and uninstalling the services with `make remove-pi`.
 
 ## Our Raspberry Pi setup
 

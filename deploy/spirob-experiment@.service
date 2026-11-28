@@ -1,0 +1,15 @@
+[Unit]
+Description=SpiRob experiment runner HTTP server
+Wants=spirob-gpio@%i.service spirob-mocap@%i.service
+After=spirob-gpio@%i.service spirob-mocap@%i.service
+
+[Service]
+User=%i
+WorkingDirectory=/home/%i/spirob_py_code
+ExecStart=/bin/bash -c 'source /home/%i/ros2_spirob_ws/install/setup.bash && exec .venv/bin/experiment-runner-server --host 127.0.0.1'
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target
