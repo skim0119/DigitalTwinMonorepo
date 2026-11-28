@@ -27,7 +27,7 @@ def cost(pose, *, position_weight=1.0, tilt_weight=0.0, vertical_axis="z"):
 
 
 PULL_KGF = 0.50
-PINGS_PER_DIRECTION = 3
+PINGS_PER_DIRECTION = 1
 
 
 def pull_targets(motor):
@@ -87,7 +87,7 @@ def run_round(rig, *, settle_timeout,
                 final_loss = loss_at(pose)
                 improved = final_loss < direction_start_loss
                 verdict = "improved" if improved else "did not improve"
-                rig.report(f"m{motor} {verdict} after {PINGS_PER_DIRECTION} pings "
+                rig.report(f"m{motor} {verdict} after {PINGS_PER_DIRECTION} ping "
                            f"| loss {direction_start_loss:.3f} → {final_loss:.3f}")
                 if improved:
                     break
